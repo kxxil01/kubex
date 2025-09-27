@@ -1981,26 +1981,26 @@ final class KubectlClusterService: ClusterService {
         data: [String: String],
         binaryData: [String: String]
     ) async throws -> String {
-        var manifest: [String: Any] = [
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": [
-                "name": name,
-                "namespace": namespace
-            ],
+        var patch: [String: Any] = [
             "data": data
         ]
-        if !binaryData.isEmpty {
-            manifest["binaryData"] = binaryData
+        patch["binaryData"] = binaryData
+
+        let jsonData = try JSONSerialization.data(withJSONObject: patch, options: [])
+        guard let jsonString = String(data: jsonData, encoding: .utf8) else {
+            throw KubectlError(message: "Failed to encode config map patch payload")
         }
 
-        let jsonData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted])
-        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("kubex-configmap-\(UUID().uuidString).json")
-        try jsonData.write(to: tempURL, options: .atomic)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
         let output = try await runner.run(
-            arguments: ["apply", "-f", tempURL.path, "--context", contextName],
+            arguments: [
+                "patch",
+                "configmap",
+                name,
+                "-n", namespace,
+                "--context", contextName,
+                "--type", "merge",
+                "-p", jsonString
+            ],
             kubeconfigPath: kubeconfigPath
         )
         return output

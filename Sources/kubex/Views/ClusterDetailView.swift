@@ -336,6 +336,7 @@ struct ClusterDetailView: View {
     private var isConnected: Bool { cluster.isConnected }
     private let inspectorMinimumWidth: CGFloat = 320
     private let inspectorMaximumWidth: CGFloat = 600
+    private let inspectorOverlayHeight: CGFloat = 360
 
     private var inspectorSelectionForCluster: AppModel.InspectorSelection {
         switch model.inspectorSelection {
@@ -378,8 +379,8 @@ struct ClusterDetailView: View {
         return namespace.pods.first(where: { $0.id == selectedPodID })
     }
 
-    private var inspectorInset: CGFloat {
-        inspectorSelectionForCluster == .none ? 0 : inspectorWidth + 48
+    private var inspectorBottomInset: CGFloat {
+        inspectorSelectionForCluster == .none ? 0 : inspectorOverlayHeight
     }
 
     var body: some View {
@@ -518,7 +519,7 @@ struct ClusterDetailView: View {
                 resourceListToolbar
                 Divider()
                 resourceListBody
-                    .padding(.bottom, inspectorInset)
+                    .padding(.bottom, inspectorBottomInset)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
