@@ -81,11 +81,19 @@ func secretPermissionCacheReusesAuthChecks() async {
 
     for name in secretNames {
         runner.register(
-            arguments: ["auth", "can-i", "get", "secret/\(name)", "--namespace", namespace, "--context", contextName],
+            arguments: ["auth", "can-i", "get", "secret/\(name)", "--namespace", namespace, "--context", contextName, "--reason"],
             response: "yes"
         )
         runner.register(
-            arguments: ["auth", "can-i", "update", "secret/\(name)", "--namespace", namespace, "--context", contextName],
+            arguments: ["auth", "can-i", "patch", "secret/\(name)", "--namespace", namespace, "--context", contextName, "--reason"],
+            response: "yes"
+        )
+        runner.register(
+            arguments: ["auth", "can-i", "update", "secret/\(name)", "--namespace", namespace, "--context", contextName, "--reason"],
+            response: "yes"
+        )
+        runner.register(
+            arguments: ["auth", "can-i", "delete", "secret/\(name)", "--namespace", namespace, "--context", contextName, "--reason"],
             response: "yes"
         )
     }
@@ -96,24 +104,37 @@ func secretPermissionCacheReusesAuthChecks() async {
     #expect(first.count == secretNames.count)
     #expect(first["alpha"]?.canReveal == true)
     #expect(first["beta"]?.canEdit == true)
+    #expect(first["beta"]?.canDelete == true)
 
-    let getAlphaArgs = ["auth", "can-i", "get", "secret/alpha", "--namespace", namespace, "--context", contextName]
-    let updateAlphaArgs = ["auth", "can-i", "update", "secret/alpha", "--namespace", namespace, "--context", contextName]
-    let getBetaArgs = ["auth", "can-i", "get", "secret/beta", "--namespace", namespace, "--context", contextName]
-    let updateBetaArgs = ["auth", "can-i", "update", "secret/beta", "--namespace", namespace, "--context", contextName]
+    let getAlphaArgs = ["auth", "can-i", "get", "secret/alpha", "--namespace", namespace, "--context", contextName, "--reason"]
+    let patchAlphaArgs = ["auth", "can-i", "patch", "secret/alpha", "--namespace", namespace, "--context", contextName, "--reason"]
+    let updateAlphaArgs = ["auth", "can-i", "update", "secret/alpha", "--namespace", namespace, "--context", contextName, "--reason"]
+    let deleteAlphaArgs = ["auth", "can-i", "delete", "secret/alpha", "--namespace", namespace, "--context", contextName, "--reason"]
+    let getBetaArgs = ["auth", "can-i", "get", "secret/beta", "--namespace", namespace, "--context", contextName, "--reason"]
+    let patchBetaArgs = ["auth", "can-i", "patch", "secret/beta", "--namespace", namespace, "--context", contextName, "--reason"]
+    let updateBetaArgs = ["auth", "can-i", "update", "secret/beta", "--namespace", namespace, "--context", contextName, "--reason"]
+    let deleteBetaArgs = ["auth", "can-i", "delete", "secret/beta", "--namespace", namespace, "--context", contextName, "--reason"]
 
     let initialGetAlpha = runner.callCount(for: getAlphaArgs)
+    let initialPatchAlpha = runner.callCount(for: patchAlphaArgs)
     let initialUpdateAlpha = runner.callCount(for: updateAlphaArgs)
+    let initialDeleteAlpha = runner.callCount(for: deleteAlphaArgs)
     let initialGetBeta = runner.callCount(for: getBetaArgs)
+    let initialPatchBeta = runner.callCount(for: patchBetaArgs)
     let initialUpdateBeta = runner.callCount(for: updateBetaArgs)
+    let initialDeleteBeta = runner.callCount(for: deleteBetaArgs)
 
     let second = await service._test_fetchSecretPermissions(contextName: contextName, namespace: namespace, names: secretNames)
     #expect(second == first)
 
     #expect(runner.callCount(for: getAlphaArgs) == initialGetAlpha)
+    #expect(runner.callCount(for: patchAlphaArgs) == initialPatchAlpha)
     #expect(runner.callCount(for: updateAlphaArgs) == initialUpdateAlpha)
+    #expect(runner.callCount(for: deleteAlphaArgs) == initialDeleteAlpha)
     #expect(runner.callCount(for: getBetaArgs) == initialGetBeta)
+    #expect(runner.callCount(for: patchBetaArgs) == initialPatchBeta)
     #expect(runner.callCount(for: updateBetaArgs) == initialUpdateBeta)
+    #expect(runner.callCount(for: deleteBetaArgs) == initialDeleteBeta)
 }
 
 // MARK: - Fixtures

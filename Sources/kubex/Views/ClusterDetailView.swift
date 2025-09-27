@@ -328,15 +328,21 @@ struct ClusterDetailView: View {
     @State private var networkResourceFocus: NetworkResourceKind = .services
     @State private var podInspectorTab: PodInspectorTab = .summary
     @State private var workloadInspectorTab: WorkloadInspectorTab = .summary
-    @State private var nodeSortOption: NodeSortOption = .default
-    @State private var workloadSortOption: WorkloadSortOption = .default
     @State private var inspectorWidth: CGFloat = 360
     @State private var inspectorDragBaseline: CGFloat?
+    @State private var pendingQuickSearchTarget: AppModel.QuickSearchTarget?
 
     private var isConnected: Bool { cluster.isConnected }
     private let inspectorMinimumWidth: CGFloat = 320
     private let inspectorMaximumWidth: CGFloat = 600
     private let inspectorOverlayHeight: CGFloat = 360
+
+    private var nodeSortBinding: Binding<NodeSortOption> {
+        Binding(
+            get: { model.nodeSortOption },
+            set: { model.nodeSortOption = $0 }
+        )
+    }
 
     private var inspectorSelectionForCluster: AppModel.InspectorSelection {
         switch model.inspectorSelection {
@@ -381,6 +387,402 @@ struct ClusterDetailView: View {
 
     private var inspectorBottomInset: CGFloat {
         inspectorSelectionForCluster == .none ? 0 : inspectorOverlayHeight
+    }
+
+    private var workloadQuickSearchFocusID: WorkloadSummary.ID? {
+        guard let target = pendingQuickSearchTarget else { return nil }
+        if case let .workload(_, _, workloadID) = target {
+            return workloadID
+        }
+        return nil
+    }
+
+    private var podQuickSearchFocusID: PodSummary.ID? {
+        guard let target = pendingQuickSearchTarget else { return nil }
+        if case let .pod(_, podID) = target {
+            return podID
+        }
+        return nil
+    }
+
+    private var workloadLabelSelectors: [LabelSelector] {
+        guard let namespace, cluster.isConnected else { return [] }
+        return selectorList(from: namespace.workloads.map { $0.labels })
+    }
+
+    private var podLabelSelectors: [LabelSelector] {
+        guard let namespace, cluster.isConnected else { return [] }
+        return selectorList(from: namespace.pods.map { $0.labels })
+    }
+
+    private var nodeLabelSelectors: [LabelSelector] {
+        selectorList(from: cluster.nodes.map { $0.labels })
+    }
+
+    private var configLabelSelectors: [LabelSelector] {
+        guard let namespace, cluster.isConnected else { return [] }
+        return selectorList(from: namespace.configResources.map { $0.labels })
+    }
+
+    private var availableConfigKinds: [ConfigResourceKind] {
+        guard let namespace else { return [] }
+        let kinds = Set(namespace.configResources.map { $0.kind })
+        return ConfigResourceKind.allCases.filter { kinds.contains($0) }
+    }
+
+    private func selectorList(from labelMaps: [[String: String]], limit: Int = 14) -> [LabelSelector] {
+        var seen: Set<String> = []
+        var selectors: [LabelSelector] = []
+        for map in labelMaps {
+            for (key, value) in map {
+                guard !key.isEmpty else { continue }
+                let selector = LabelSelector(key: key, value: value)
+                let identifier = selector.id
+                if seen.insert(identifier).inserted {
+                    selectors.append(selector)
+                }
+            }
+        }
+        selectors.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        if selectors.count > limit {
+            return Array(selectors.prefix(limit))
+        }
+        return selectors
+    }
+
+    private func toggleWorkloadStatus(_ status: WorkloadStatus) {
+        var state = model.workloadFilterState
+        if state.statuses.contains(status) {
+            state.statuses.remove(status)
+        } else {
+            state.statuses.insert(status)
+        }
+        model.workloadFilterState = state
+    }
+
+    private func toggleWorkloadLabel(_ selector: LabelSelector) {
+        var state = model.workloadFilterState
+        if state.labelSelectors.contains(selector) {
+            state.labelSelectors.remove(selector)
+        } else {
+            state.labelSelectors.insert(selector)
+        }
+        model.workloadFilterState = state
+    }
+
+    private func clearWorkloadFilters() {
+        model.workloadFilterState = .empty
+    }
+
+    private func togglePodPhase(_ phase: PodPhase) {
+        var state = model.podFilterState
+        if state.phases.contains(phase) {
+            state.phases.remove(phase)
+        } else {
+            state.phases.insert(phase)
+        }
+        model.podFilterState = state
+    }
+
+    private func togglePodWarnings() {
+        var state = model.podFilterState
+        state.onlyWithWarnings.toggle()
+        model.podFilterState = state
+    }
+
+    private func togglePodLabel(_ selector: LabelSelector) {
+        var state = model.podFilterState
+        if state.labelSelectors.contains(selector) {
+            state.labelSelectors.remove(selector)
+        } else {
+            state.labelSelectors.insert(selector)
+        }
+        model.podFilterState = state
+    }
+
+    private func clearPodFilters() {
+        model.podFilterState = .empty
+    }
+
+    private func toggleNodeReady() {
+        var state = model.nodeFilterState
+        state.onlyReady.toggle()
+        model.nodeFilterState = state
+    }
+
+    private func toggleNodeWarnings() {
+        var state = model.nodeFilterState
+        state.onlyWithWarnings.toggle()
+        model.nodeFilterState = state
+    }
+
+    private func toggleNodeLabel(_ selector: LabelSelector) {
+        var state = model.nodeFilterState
+        if state.labelSelectors.contains(selector) {
+            state.labelSelectors.remove(selector)
+        } else {
+            state.labelSelectors.insert(selector)
+        }
+        model.nodeFilterState = state
+    }
+
+    private func clearNodeFilters() {
+        model.nodeFilterState = .empty
+    }
+
+    private func toggleConfigKind(_ kind: ConfigResourceKind) {
+        var state = model.configFilterState
+        if state.kinds.contains(kind) {
+            state.kinds.remove(kind)
+        } else {
+            state.kinds.insert(kind)
+        }
+        model.configFilterState = state
+    }
+
+    private func toggleConfigLabel(_ selector: LabelSelector) {
+        var state = model.configFilterState
+        if state.labelSelectors.contains(selector) {
+            state.labelSelectors.remove(selector)
+        } else {
+            state.labelSelectors.insert(selector)
+        }
+        model.configFilterState = state
+    }
+
+    private func clearConfigFilters() {
+        model.configFilterState = .empty
+    }
+
+    @ViewBuilder
+    private var filterControls: some View {
+        if isWorkloadListTab {
+            workloadFilterBar
+        } else if selectedTab == .workloadsPods {
+            podFilterBar
+        } else if selectedTab == .nodes {
+            nodeFilterBar
+        } else if selectedTab == .config {
+            configFilterBar
+        } else {
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var workloadFilterBar: some View {
+        if cluster.isConnected, namespace != nil {
+            let filter = model.workloadFilterState
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("Status")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    ForEach(WorkloadStatus.allCases, id: \.self) { status in
+                        FilterChip(
+                            title: status.displayName,
+                            isSelected: filter.statuses.contains(status),
+                            tint: status.tint
+                        ) {
+                            toggleWorkloadStatus(status)
+                        }
+                    }
+                    if !filter.isEmpty {
+                        Button("Reset") { clearWorkloadFilters() }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                    }
+                }
+
+                let labels = workloadLabelSelectors
+                if !labels.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            Text("Labels")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            ForEach(labels) { selector in
+                                FilterChip(
+                                    title: selector.displayName,
+                                    isSelected: filter.labelSelectors.contains(selector)
+                                ) {
+                                    toggleWorkloadLabel(selector)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .transition(.opacity)
+        } else {
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var podFilterBar: some View {
+        if cluster.isConnected, namespace != nil {
+            let filter = model.podFilterState
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("Phase")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    ForEach(PodPhase.allCases, id: \.self) { phase in
+                        FilterChip(
+                            title: phase.displayName,
+                            isSelected: filter.phases.contains(phase),
+                            tint: phase.tint
+                        ) {
+                            togglePodPhase(phase)
+                        }
+                    }
+                    FilterChip(
+                        title: "Warnings",
+                        isSelected: filter.onlyWithWarnings,
+                        systemImage: "exclamationmark.triangle"
+                    ) {
+                        togglePodWarnings()
+                    }
+                    if !filter.isEmpty {
+                        Button("Reset") { clearPodFilters() }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                    }
+                }
+
+                let labels = podLabelSelectors
+                if !labels.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            Text("Labels")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            ForEach(labels) { selector in
+                                FilterChip(
+                                    title: selector.displayName,
+                                    isSelected: filter.labelSelectors.contains(selector)
+                                ) {
+                                    togglePodLabel(selector)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .transition(.opacity)
+        } else {
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var nodeFilterBar: some View {
+        if cluster.isConnected {
+            let filter = model.nodeFilterState
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("Filters")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    FilterChip(
+                        title: "Ready",
+                        isSelected: filter.onlyReady,
+                        systemImage: "checkmark.circle"
+                    ) {
+                        toggleNodeReady()
+                    }
+                    FilterChip(
+                        title: "Warnings",
+                        isSelected: filter.onlyWithWarnings,
+                        systemImage: "exclamationmark.triangle"
+                    ) {
+                        toggleNodeWarnings()
+                    }
+                    if !filter.isEmpty {
+                        Button("Reset") { clearNodeFilters() }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                    }
+                }
+
+                let labels = nodeLabelSelectors
+                if !labels.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            Text("Labels")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            ForEach(labels) { selector in
+                                FilterChip(
+                                    title: selector.displayName,
+                                    isSelected: filter.labelSelectors.contains(selector)
+                                ) {
+                                    toggleNodeLabel(selector)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var configFilterBar: some View {
+        if cluster.isConnected, namespace != nil {
+            let filter = model.configFilterState
+            VStack(alignment: .leading, spacing: 6) {
+                let kinds = availableConfigKinds
+                if !kinds.isEmpty {
+                    HStack(spacing: 6) {
+                        Text("Type")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        ForEach(kinds, id: \.self) { kind in
+                            FilterChip(
+                                title: kind.displayName,
+                                isSelected: filter.kinds.contains(kind)
+                            ) {
+                                toggleConfigKind(kind)
+                            }
+                        }
+                        if !filter.isEmpty {
+                            Button("Reset") { clearConfigFilters() }
+                                .buttonStyle(.borderless)
+                                .font(.caption)
+                        }
+                    }
+                }
+
+                let labels = configLabelSelectors
+                if !labels.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            Text("Labels")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            ForEach(labels) { selector in
+                                FilterChip(
+                                    title: selector.displayName,
+                                    isSelected: filter.labelSelectors.contains(selector)
+                                ) {
+                                    toggleConfigLabel(selector)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .transition(.opacity)
+        } else {
+            EmptyView()
+        }
     }
 
     var body: some View {
@@ -467,6 +869,11 @@ struct ClusterDetailView: View {
         .onChange(of: namespace?.workloads) { _, _ in
             syncInspectorSelection()
         }
+        .onChange(of: model.quickSearchFocus) { _, selection in
+            guard let selection, selection.clusterID == cluster.id else { return }
+            applyQuickSearchSelection(selection.target)
+            model.consumeQuickSearchFocus()
+        }
         .sheet(isPresented: $showingPortForward) {
             if let namespace, let pod = selectedPod {
                 PortForwardSheet(cluster: cluster, namespace: namespace, pod: pod)
@@ -528,48 +935,52 @@ struct ClusterDetailView: View {
     }
 
     private var resourceListToolbar: some View {
-        HStack(spacing: 12) {
-            TextField("Filter resources", text: $resourceSearchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 260)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                TextField("Filter resources", text: $resourceSearchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 260)
 
-            switch selectedTab {
-            case .network:
-                Picker("Resource", selection: $networkResourceFocus) {
-                    ForEach(NetworkResourceKind.allCases) { kind in
-                        Text(kind.title)
-                            .tag(kind)
+                switch selectedTab {
+                case .network:
+                    Picker("Resource", selection: $networkResourceFocus) {
+                        ForEach(NetworkResourceKind.allCases) { kind in
+                            Text(kind.title)
+                                .tag(kind)
+                        }
                     }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 220)
-            default:
-                EmptyView()
-            }
-
-            if selectedTab == .nodes {
-                nodeSortMenu
-            }
-
-            if isWorkloadListTab {
-                workloadSortMenu
-            }
-
-            Spacer()
-
-            if selectedTab == .helm {
-                if model.helmLoadingContexts.contains(cluster.contextName) {
-                    ProgressView()
-                        .controlSize(.small)
+                    .pickerStyle(.segmented)
+                    .frame(width: 220)
+                default:
+                    EmptyView()
                 }
 
-                Button {
-                    Task { await model.reloadHelmReleases(for: cluster) }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                if selectedTab == .nodes {
+                    nodeSortMenu
                 }
-                .disabled(!cluster.isConnected || model.helmLoadingContexts.contains(cluster.contextName))
+
+                if isWorkloadListTab {
+                    workloadSortMenu
+                }
+
+                Spacer()
+
+                if selectedTab == .helm {
+                    if model.helmLoadingContexts.contains(cluster.contextName) {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    Button {
+                        Task { await model.reloadHelmReleases(for: cluster) }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(!cluster.isConnected || model.helmLoadingContexts.contains(cluster.contextName))
+                }
             }
+
+            filterControls
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
@@ -578,13 +989,13 @@ struct ClusterDetailView: View {
 
     private var nodeSortMenu: some View {
         Menu {
-            Button(action: { nodeSortOption.toggleDirection() }) {
-                Label(nodeSortOption.direction.toggleLabel, systemImage: nodeSortOption.direction.symbolName)
+            Button(action: { model.nodeSortOption.toggleDirection() }) {
+                Label(model.nodeSortOption.direction.toggleLabel, systemImage: model.nodeSortOption.direction.symbolName)
             }
             Divider()
             ForEach(NodeSortField.allCases) { field in
                 Button(action: { selectNodeSort(field: field) }) {
-                    if nodeSortOption.field == field {
+                    if model.nodeSortOption.field == field {
                         Label(field.title, systemImage: "checkmark")
                     } else {
                         Text(field.title)
@@ -592,20 +1003,20 @@ struct ClusterDetailView: View {
                 }
             }
         } label: {
-            Label("Sort \(nodeSortOption.description)", systemImage: "arrow.up.arrow.down")
+            Label("Sort \(model.nodeSortOption.description)", systemImage: "arrow.up.arrow.down")
         }
         .menuStyle(.borderlessButton)
     }
 
     private var workloadSortMenu: some View {
         Menu {
-            Button(action: { workloadSortOption.toggleDirection() }) {
-                Label(workloadSortOption.direction.toggleLabel, systemImage: workloadSortOption.direction.symbolName)
+            Button(action: { model.workloadSortOption.toggleDirection() }) {
+                Label(model.workloadSortOption.direction.toggleLabel, systemImage: model.workloadSortOption.direction.symbolName)
             }
             Divider()
             ForEach(WorkloadSortField.allCases) { field in
                 Button(action: { selectWorkloadSort(field: field) }) {
-                    if workloadSortOption.field == field {
+                    if model.workloadSortOption.field == field {
                         Label(field.title, systemImage: "checkmark")
                     } else {
                         Text(field.title)
@@ -613,7 +1024,7 @@ struct ClusterDetailView: View {
                 }
             }
         } label: {
-            Label("Sort \(workloadSortOption.description)", systemImage: "arrow.up.arrow.down")
+            Label("Sort \(model.workloadSortOption.description)", systemImage: "arrow.up.arrow.down")
         }
         .menuStyle(.borderlessButton)
     }
@@ -628,7 +1039,9 @@ struct ClusterDetailView: View {
                 kind: nil,
                 showsKindColumn: true,
                 searchText: resourceSearchText,
-                sortOption: workloadSortOption,
+                sortOption: model.workloadSortOption,
+                filter: model.workloadFilterState,
+                focusID: workloadQuickSearchFocusID,
                 selection: $selectedWorkloadIDs,
                 onInspect: { handleWorkloadSelection($0) },
                 onFocusPods: { focusPods(for: $0) }
@@ -640,7 +1053,9 @@ struct ClusterDetailView: View {
                 kind: .deployment,
                 showsKindColumn: false,
                 searchText: resourceSearchText,
-                sortOption: workloadSortOption,
+                sortOption: model.workloadSortOption,
+                filter: model.workloadFilterState,
+                focusID: workloadQuickSearchFocusID,
                 selection: $selectedWorkloadIDs,
                 onInspect: { handleWorkloadSelection($0) },
                 onFocusPods: { focusPods(for: $0) }
@@ -652,7 +1067,9 @@ struct ClusterDetailView: View {
                 kind: .daemonSet,
                 showsKindColumn: false,
                 searchText: resourceSearchText,
-                sortOption: workloadSortOption,
+                sortOption: model.workloadSortOption,
+                filter: model.workloadFilterState,
+                focusID: workloadQuickSearchFocusID,
                 selection: $selectedWorkloadIDs,
                 onInspect: { handleWorkloadSelection($0) },
                 onFocusPods: { focusPods(for: $0) }
@@ -664,7 +1081,9 @@ struct ClusterDetailView: View {
                 kind: .statefulSet,
                 showsKindColumn: false,
                 searchText: resourceSearchText,
-                sortOption: workloadSortOption,
+                sortOption: model.workloadSortOption,
+                filter: model.workloadFilterState,
+                focusID: workloadQuickSearchFocusID,
                 selection: $selectedWorkloadIDs,
                 onInspect: { handleWorkloadSelection($0) },
                 onFocusPods: { focusPods(for: $0) }
@@ -676,7 +1095,9 @@ struct ClusterDetailView: View {
                 kind: .replicaSet,
                 showsKindColumn: false,
                 searchText: resourceSearchText,
-                sortOption: workloadSortOption,
+                sortOption: model.workloadSortOption,
+                filter: model.workloadFilterState,
+                focusID: workloadQuickSearchFocusID,
                 selection: $selectedWorkloadIDs,
                 onInspect: { handleWorkloadSelection($0) },
                 onFocusPods: { focusPods(for: $0) }
@@ -688,7 +1109,9 @@ struct ClusterDetailView: View {
                 kind: .replicationController,
                 showsKindColumn: false,
                 searchText: resourceSearchText,
-                sortOption: workloadSortOption,
+                sortOption: model.workloadSortOption,
+                filter: model.workloadFilterState,
+                focusID: workloadQuickSearchFocusID,
                 selection: $selectedWorkloadIDs,
                 onInspect: { handleWorkloadSelection($0) },
                 onFocusPods: { focusPods(for: $0) }
@@ -700,7 +1123,9 @@ struct ClusterDetailView: View {
                 kind: .job,
                 showsKindColumn: false,
                 searchText: resourceSearchText,
-                sortOption: workloadSortOption,
+                sortOption: model.workloadSortOption,
+                filter: model.workloadFilterState,
+                focusID: workloadQuickSearchFocusID,
                 selection: $selectedWorkloadIDs,
                 onInspect: { handleWorkloadSelection($0) },
                 onFocusPods: { focusPods(for: $0) }
@@ -712,7 +1137,9 @@ struct ClusterDetailView: View {
                 kind: .cronJob,
                 showsKindColumn: false,
                 searchText: resourceSearchText,
-                sortOption: workloadSortOption,
+                sortOption: model.workloadSortOption,
+                filter: model.workloadFilterState,
+                focusID: workloadQuickSearchFocusID,
                 selection: $selectedWorkloadIDs,
                 onInspect: { handleWorkloadSelection($0) },
                 onFocusPods: { focusPods(for: $0) }
@@ -721,6 +1148,7 @@ struct ClusterDetailView: View {
             PodListView(
                 namespace: namespace,
                 isConnected: isConnected,
+                filter: model.podFilterState,
                 selection: $selectedPodIDs,
                 focusedID: $selectedPodID,
                 searchText: resourceSearchText,
@@ -730,7 +1158,8 @@ struct ClusterDetailView: View {
                 onShowYAML: { handleEdit($0) },
                 onPortForward: { handlePortForward($0) },
                 onEvict: { handleEvict($0) },
-                onDelete: { handleDelete($0) }
+                onDelete: { handleDelete($0) },
+                focusID: podQuickSearchFocusID
             )
         case .helm:
             HelmListView(
@@ -741,20 +1170,33 @@ struct ClusterDetailView: View {
                 searchText: resourceSearchText
             )
         case .network:
-            NetworkListView(
-                namespace: namespace,
-                isConnected: isConnected,
-                focus: networkResourceFocus,
-                serviceSelection: $selectedServiceIDs,
-                ingressSelection: $selectedIngressIDs,
-                searchText: resourceSearchText
-            )
+            VStack(spacing: 20) {
+                NetworkListView(
+                    namespace: namespace,
+                    isConnected: isConnected,
+                    focus: networkResourceFocus,
+                    serviceSelection: $selectedServiceIDs,
+                    ingressSelection: $selectedIngressIDs,
+                    searchText: resourceSearchText,
+                    servicePermissions: { service in servicePermissions(for: service) },
+                    onInspectService: { handleServiceInspect($0) },
+                    onEditService: { handleServiceEdit($0) },
+                    onDeleteService: { handleServiceDelete($0) }
+                )
+
+                PortForwardDashboard(cluster: cluster, namespace: namespace)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         case .storage:
             StorageListView(
                 namespace: namespace,
                 isConnected: isConnected,
                 selection: $selectedPVCIDs,
-                searchText: resourceSearchText
+                searchText: resourceSearchText,
+                claimPermissions: { claim in pvcPermissions(for: claim) },
+                onInspectClaim: { handlePVCInspect($0) },
+                onEditClaim: { handlePVCEdit($0) },
+                onDeleteClaim: { handlePVCDelete($0) }
             )
         default:
             Color.clear
@@ -840,6 +1282,12 @@ private struct PodExecPane: View {
     @State private var errorMessage: String?
 
     private let maxEntries = 20
+    private var canExec: Bool {
+        cluster.isConnected && namespace.permissions.canExecPods
+    }
+    private var execReason: String? {
+        namespace.permissions.reason(for: .execPods)
+    }
 
     init(
         cluster: Cluster,
@@ -855,7 +1303,11 @@ private struct PodExecPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             controlRow
-            if let message = errorMessage {
+            if !canExec {
+                Label(execReason ?? "Exec disabled by RBAC (pods/exec)", systemImage: "hand.raised")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let message = errorMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
                     .font(.caption)
@@ -873,7 +1325,7 @@ private struct PodExecPane: View {
             TextField("Command", text: $command, prompt: Text("ls -lah /"))
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(runCommand)
-                .disabled(isRunning)
+                .disabled(isRunning || !canExec)
                 .font(.system(.body, design: .monospaced))
                 .frame(minWidth: 220)
             Button {
@@ -884,7 +1336,8 @@ private struct PodExecPane: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: [.command])
-            .disabled(isRunning || command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(isRunning || command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canExec)
+            .help(!canExec ? (execReason ?? "Requires pods/exec permission.") : "Execute command inside the container.")
 
             Button("Clear") { entries.removeAll() }
                 .disabled(entries.isEmpty)
@@ -968,6 +1421,10 @@ private struct PodExecPane: View {
 
     private func runCommand() {
         guard !isRunning else { return }
+        guard canExec else {
+            errorMessage = execReason ?? "You do not have permission to run exec commands in this namespace."
+            return
+        }
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             errorMessage = "Enter a command to execute."
@@ -1171,12 +1628,50 @@ private struct PodInspectorView: View {
         }
     }
 
+    private var permissions: NamespacePermissions { effectiveNamespace.permissions }
+    private var canViewLogs: Bool { cluster.isConnected && permissions.canViewPodLogs }
+    private var canExec: Bool { cluster.isConnected && permissions.canExecPods }
+    private var canViewYaml: Bool { cluster.isConnected && permissions.canGetPods }
+    private var canDelete: Bool { cluster.isConnected && permissions.canDeletePods }
+    private var canPortForward: Bool { cluster.isConnected && permissions.canPortForwardPods }
+    private var podEvents: [EventSummary] {
+        effectiveNamespace.events.filter { $0.message.localizedCaseInsensitiveContains(pod.name) }
+    }
+    private var podEventCounts: (warnings: Int, errors: Int) {
+        var warnings = 0
+        var errors = 0
+        for event in podEvents {
+            let count = max(event.count, 1)
+            switch event.type {
+            case .warning: warnings += count
+            case .error: errors += count
+            default: break
+            }
+        }
+        return (warnings, errors)
+    }
+    private var availableTabs: [PodInspectorTab] {
+        PodInspectorTab.allCases.filter { tab in
+            switch tab {
+            case .logs: return canViewLogs
+            case .exec: return canExec
+            case .yaml: return canViewYaml
+            default: return true
+            }
+        }
+    }
+
+    private func permissionHelp(_ action: NamespacePermissionAction, fallback: String) -> String? {
+        guard !permissions.allows(action) else { return nil }
+        return permissions.reason(for: action) ?? fallback
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             actionToolbar
             Picker("", selection: $tab) {
-                ForEach(PodInspectorTab.allCases) { tab in
+                ForEach(availableTabs) { tab in
                     Text(tab.title).tag(tab)
                 }
             }
@@ -1197,28 +1692,67 @@ private struct PodInspectorView: View {
                     .environmentObject(model)
                 }
             case .logs:
-                PodLogsPane(
-                    cluster: cluster,
-                    namespace: effectiveNamespace,
-                    pod: pod,
-                    presentation: .inspector
-                )
-                .environmentObject(model)
-                .frame(minHeight: 260)
+                if canViewLogs {
+                    PodLogsPane(
+                        cluster: cluster,
+                        namespace: effectiveNamespace,
+                        pod: pod,
+                        presentation: .inspector
+                    )
+                    .environmentObject(model)
+                    .frame(minHeight: 260)
+                } else {
+                    ContentUnavailableView(
+                        "Logs unavailable",
+                        systemImage: "lock",
+                        description: Text("You do not have permission to view pod logs.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             case .exec:
-                PodExecPane(
-                    cluster: cluster,
-                    namespace: effectiveNamespace,
-                    pod: pod
-                )
-                .environmentObject(model)
-                .frame(minHeight: 260)
+                if canExec {
+                    PodExecPane(
+                        cluster: cluster,
+                        namespace: effectiveNamespace,
+                        pod: pod
+                    )
+                    .environmentObject(model)
+                    .frame(minHeight: 260)
+                } else {
+                    ContentUnavailableView(
+                        "Exec unavailable",
+                        systemImage: "hand.raised",
+                        description: Text("Your RBAC policy blocks creating pods/exec sessions.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             case .yaml:
-                yamlContent
+                if canViewYaml {
+                    yamlContent
+                } else {
+                    ContentUnavailableView(
+                        "YAML unavailable",
+                        systemImage: "doc",
+                        description: Text("You do not have permission to retrieve this pod manifest.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .padding(16)
         .onChange(of: tab) { _, newValue in
+            if newValue == .logs && !canViewLogs {
+                tab = .summary
+                return
+            }
+            if newValue == .exec && !canExec {
+                tab = .summary
+                return
+            }
+            if newValue == .yaml && !canViewYaml {
+                tab = .summary
+                return
+            }
             if newValue == .yaml {
                 Task { await loadYAMLIfNeeded() }
             }
@@ -1230,8 +1764,13 @@ private struct PodInspectorView: View {
             isApplyingYAML = false
         }
         .task(id: tab) {
-            if tab == .yaml {
+            if tab == .yaml && canViewYaml {
                 await loadYAMLIfNeeded()
+            }
+        }
+        .onAppear {
+            if !availableTabs.contains(tab) {
+                tab = .summary
             }
         }
     }
@@ -1245,6 +1784,21 @@ private struct PodInspectorView: View {
             Text("Namespace \(effectiveNamespace.name)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            let counts = podEventCounts
+            if counts.errors > 0 || counts.warnings > 0 {
+                HStack(spacing: 8) {
+                    if counts.errors > 0 {
+                        Label("\(counts.errors) errors", systemImage: "exclamationmark.octagon.fill")
+                            .font(.caption2.bold())
+                            .foregroundStyle(Color.red)
+                    }
+                    if counts.warnings > 0 {
+                        Label("\(counts.warnings) warnings", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2.bold())
+                            .foregroundStyle(Color.orange)
+                    }
+                }
+            }
             if !activePortForwardsForPod.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(activePortForwardsForPod) { forward in
@@ -1265,28 +1819,38 @@ private struct PodInspectorView: View {
             Button { tab = .logs } label: {
                 Label("Logs", systemImage: "text.justifyleft")
             }
+            .disabled(!canViewLogs)
+            .optionalHelp(permissionHelp(.viewPodLogs, fallback: "Requires pods/log permission."))
             Button { tab = .exec } label: {
                 Label("Exec", systemImage: "terminal")
             }
+            .disabled(!canExec)
+            .optionalHelp(permissionHelp(.execPods, fallback: "Requires pods/exec permission."))
             Button { tab = .yaml } label: {
                 Label("YAML", systemImage: "doc.plaintext")
             }
+            .disabled(!canViewYaml)
+            .optionalHelp(permissionHelp(.getPods, fallback: "Requires get pods permission."))
 
             Spacer()
 
             Button { actions.onPortForward(pod) } label: {
                 Label("Port Forward", systemImage: "arrow.left.and.right")
             }
-            .disabled(!cluster.isConnected)
+            .disabled(!canPortForward)
+            .optionalHelp(permissionHelp(.portForwardPods, fallback: "Requires pods/portforward permission."))
 
             Menu {
                 Button("Evict") { actions.onEvict(pod) }
-                    .disabled(!cluster.isConnected)
+                    .disabled(!canDelete)
+                    .optionalHelp(permissionHelp(.deletePods, fallback: "Requires delete pods permission."))
                 Button(role: .destructive) {
                     actions.onDelete(pod)
                 } label: {
                     Text("Delete")
                 }
+                .disabled(!canDelete)
+                .optionalHelp(permissionHelp(.deletePods, fallback: "Requires delete pods permission."))
             } label: {
                 Label("Actions", systemImage: "ellipsis.circle")
             }
@@ -1542,7 +2106,46 @@ private struct WorkloadInspectorView: View {
             Text("Namespace \(namespace.name)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            let counts = workloadEventCounts
+            if counts.errors > 0 || counts.warnings > 0 {
+                HStack(spacing: 8) {
+                    if counts.errors > 0 {
+                        Label("\(counts.errors) errors", systemImage: "exclamationmark.octagon.fill")
+                            .font(.caption2.bold())
+                            .foregroundStyle(Color.red)
+                    }
+                    if counts.warnings > 0 {
+                        Label("\(counts.warnings) warnings", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2.bold())
+                            .foregroundStyle(Color.orange)
+                    }
+                }
+            }
         }
+    }
+
+    private var workloadEvents: [EventSummary] {
+        let workloadName = workload.name.lowercased()
+        let podNames = Set(pods.map { $0.name.lowercased() })
+        return namespace.events.filter { event in
+            let message = event.message.lowercased()
+            if message.contains(workloadName) { return true }
+            return podNames.contains { message.contains($0) }
+        }
+    }
+
+    private var workloadEventCounts: (warnings: Int, errors: Int) {
+        var warnings = 0
+        var errors = 0
+        for event in workloadEvents {
+            let count = max(event.count, 1)
+            switch event.type {
+            case .warning: warnings += count
+            case .error: errors += count
+            default: break
+            }
+        }
+        return (warnings, errors)
     }
 
     private var yamlContent: some View {
@@ -1661,6 +2264,26 @@ private struct WorkloadRolloutPane: View {
         return mapping
     }
 
+    private var eventsByPod: [String: (warnings: Int, errors: Int)] {
+        var mapping: [String: (Int, Int)] = [:]
+        let lowercasedPods = pods.map { $0.name.lowercased() }
+        for event in namespace.events where event.type != .normal {
+            let message = event.message.lowercased()
+            let count = max(event.count, 1)
+            for (index, podName) in lowercasedPods.enumerated() {
+                guard message.contains(podName) else { continue }
+                var entry = mapping[pods[index].name, default: (0, 0)]
+                switch event.type {
+                case .warning: entry.0 += count
+                case .error: entry.1 += count
+                default: break
+                }
+                mapping[pods[index].name] = entry
+            }
+        }
+        return mapping
+    }
+
     private var rolloutChartData: [RolloutChartSample] {
         guard let series = rolloutSeries else { return [] }
         var samples: [RolloutChartSample] = []
@@ -1707,6 +2330,20 @@ private struct WorkloadRolloutPane: View {
         return Array(annotations.sorted { $0.timestamp < $1.timestamp }.suffix(8))
     }
 
+    private var rolloutAlertCounts: (warnings: Int, errors: Int) {
+        var warnings = 0
+        var errors = 0
+        for event in relatedEvents {
+            let count = max(event.count, 1)
+            switch event.type {
+            case .warning: warnings += count
+            case .error: errors += count
+            default: break
+            }
+        }
+        return (warnings, errors)
+    }
+
     private func serviceLine(for services: [ServiceSummary]) -> some View {
         let names = services.map(\.name).sorted()
         return HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -1749,6 +2386,24 @@ private struct WorkloadRolloutPane: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
+    private func statusChangeLabel(_ marker: RolloutStatusChange) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: marker.state.icon)
+                .font(.caption2)
+                .foregroundStyle(marker.state.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(marker.state.label)
+                    .font(.caption2.bold())
+                    .foregroundStyle(marker.state.tint)
+                Text("Ready \(marker.readinessRatio.formatted(.percent.precision(.fractionLength(0...1))))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(6)
+        .background(.thinMaterial, in: Capsule())
+    }
+
     private var relatedEvents: [EventSummary] {
         let workloadName = workload.name.lowercased()
         let podNames = Set(pods.map { $0.name.lowercased() })
@@ -1770,6 +2425,55 @@ private struct WorkloadRolloutPane: View {
                     return true
                 }
             }
+    }
+
+    private var timedEvents: [EventSummary] {
+        relatedEvents
+            .filter { $0.timestamp != nil }
+            .sorted { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
+    }
+
+    private var rolloutHealthSegments: [RolloutHealthSegment] {
+        guard let readyPoints = rolloutSeries?.ready.sorted(by: { $0.timestamp < $1.timestamp }), !readyPoints.isEmpty,
+              let range = chartTimeRange else { return [] }
+        var segments: [RolloutHealthSegment] = []
+        let timelineEnd = range.upperBound
+
+        for (index, point) in readyPoints.enumerated() {
+            let start = point.timestamp
+            let end: Date
+            if index < readyPoints.count - 1 {
+                end = max(start, readyPoints[index + 1].timestamp)
+            } else {
+                end = max(start, timelineEnd)
+            }
+            guard end > start else { continue }
+
+            var state = healthState(for: readinessRatio(forValue: point.value))
+            if containsEvent(in: start..<end, matching: { $0.type == .error }) {
+                state = .failing
+            } else if containsEvent(in: start..<end, matching: { $0.type == .warning }) && state != .failing {
+                state = .warning
+            }
+
+            segments.append(RolloutHealthSegment(start: start, end: end, state: state))
+        }
+        return segments
+    }
+
+    private var statusChangeMarkers: [RolloutStatusChange] {
+        let segments = rolloutHealthSegments
+        guard segments.count > 1 else { return [] }
+        var markers: [RolloutStatusChange] = []
+        var previousState = segments.first!.state
+        for segment in segments.dropFirst() {
+            guard segment.state != previousState else { continue }
+            let ratio = readinessRatio(at: segment.start)
+            markers.append(RolloutStatusChange(timestamp: segment.start, state: segment.state, readinessRatio: ratio))
+            previousState = segment.state
+            if markers.count >= 5 { break }
+        }
+        return markers
     }
 
     private var statusBreakdown: [(label: String, count: Int, color: Color)] {
@@ -1803,6 +2507,43 @@ private struct WorkloadRolloutPane: View {
         case .hours(let value): return max(value, 0) * 60
         case .days(let value): return max(value, 0) * 1_440
         }
+    }
+
+    private func healthState(for ratio: Double) -> RolloutHealthState {
+        if ratio >= 0.88 { return .healthy }
+        if ratio >= 0.65 { return .warning }
+        return .failing
+    }
+
+    private func readinessRatio(forValue value: Double) -> Double {
+        guard maxReplicaValue > 0 else { return 0 }
+        return min(max(value / maxReplicaValue, 0), 1)
+    }
+
+    private func readinessRatio(at timestamp: Date) -> Double {
+        guard let readyPoints = rolloutSeries?.ready.sorted(by: { $0.timestamp < $1.timestamp }), !readyPoints.isEmpty else {
+            return 0
+        }
+        var latest = readyPoints.first!
+        for point in readyPoints {
+            if point.timestamp <= timestamp {
+                latest = point
+            } else {
+                break
+            }
+        }
+        return readinessRatio(forValue: latest.value)
+    }
+
+    private func containsEvent(in range: Range<Date>, matching predicate: (EventSummary) -> Bool) -> Bool {
+        guard !range.isEmpty else { return false }
+        for event in timedEvents {
+            guard let timestamp = event.timestamp else { continue }
+            if timestamp < range.lowerBound { continue }
+            if timestamp >= range.upperBound { break }
+            if predicate(event) { return true }
+        }
+        return false
     }
 
     var body: some View {
@@ -1849,6 +2590,22 @@ private struct WorkloadRolloutPane: View {
                 } else if workload.kind == .cronJob {
                     cronSummary
                 }
+
+                if rolloutAlertCounts.warnings > 0 || rolloutAlertCounts.errors > 0 {
+                    HStack(spacing: 12) {
+                        if rolloutAlertCounts.errors > 0 {
+                            Label("\(rolloutAlertCounts.errors) errors", systemImage: "exclamationmark.octagon.fill")
+                                .font(.caption.bold())
+                                .foregroundStyle(Color.red)
+                        }
+                        if rolloutAlertCounts.warnings > 0 {
+                            Label("\(rolloutAlertCounts.warnings) warnings", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption.bold())
+                                .foregroundStyle(Color.orange)
+                        }
+                        Spacer()
+                    }
+                }
             }
         }
     }
@@ -1862,6 +2619,17 @@ private struct WorkloadRolloutPane: View {
                     .foregroundStyle(.secondary)
             } else {
                 Chart {
+                    ForEach(rolloutHealthSegments) { segment in
+                        RectangleMark(
+                            xStart: .value("Start", segment.start),
+                            xEnd: .value("End", segment.end),
+                            yStart: .value("Min", 0),
+                            yEnd: .value("Max", maxReplicaValue)
+                        )
+                        .foregroundStyle(segment.state.tint.opacity(0.08))
+                        .zIndex(-1)
+                    }
+
                     ForEach(data) { sample in
                         LineMark(
                             x: .value("Time", sample.point.timestamp),
@@ -1891,8 +2659,18 @@ private struct WorkloadRolloutPane: View {
                             x: .value("Time", annotation.timestamp),
                             y: .value("Replicas", maxReplicaValue)
                         )
-                        .symbolSize(80)
+                        .symbol(annotation.category == .failure ? .triangle : .circle)
+                        .symbolSize(annotation.category == .failure ? 120 : 70)
                         .foregroundStyle(annotation.category.tint)
+                    }
+
+                    ForEach(statusChangeMarkers) { marker in
+                        RuleMark(x: .value("Time", marker.timestamp))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                            .foregroundStyle(marker.state.tint.opacity(0.35))
+                            .annotation(position: .bottomLeading) {
+                                statusChangeLabel(marker)
+                            }
                     }
                 }
                 .chartForegroundStyleScale(seriesColorScale)
@@ -1987,6 +2765,7 @@ private struct WorkloadRolloutPane: View {
 
                         ForEach(pods.sorted { $0.name < $1.name }) { pod in
                             let isSelected = selectedPodID == pod.id
+                            let alertState = alertState(for: pod)
                             Button {
                                 onSelectPod(pod)
                             } label: {
@@ -2033,11 +2812,11 @@ private struct WorkloadRolloutPane: View {
                             .buttonStyle(.plain)
                             .background(
                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(isSelected ? Color.accentColor.opacity(0.18) : Color(nsColor: .textBackgroundColor))
+                                    .fill(backgroundColor(for: pod, isSelected: isSelected, alertState: alertState))
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .stroke(isSelected ? Color.accentColor.opacity(0.6) : Color.gray.opacity(0.15), lineWidth: isSelected ? 1.5 : 1)
+                                    .stroke(borderColor(for: alertState, isSelected: isSelected), lineWidth: isSelected ? 1.5 : 1)
                             )
                         }
                     }
@@ -2081,27 +2860,7 @@ private struct WorkloadRolloutPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(relatedEvents.prefix(6)) { event in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(event.type.rawValue.capitalized)
-                                .font(.caption.bold())
-                                .foregroundStyle(event.type.tint)
-                                .frame(width: 70, alignment: .leading)
-                            Text(event.message)
-                                .font(.caption)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
-                            Spacer()
-                            Text("x\(event.count)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(event.age.displayText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                EventTimelineView(events: Array(relatedEvents.prefix(12)))
             }
         }
     }
@@ -2146,6 +2905,7 @@ private struct WorkloadRolloutPane: View {
 
     private func topologyCard(for node: String, pods: [PodSummary]) -> some View {
         let containsSelection = selectedPodID.map { id in pods.contains(where: { $0.id == id }) } ?? false
+        let nodeState = nodeAlertState(for: pods)
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(node)
@@ -2177,13 +2937,14 @@ private struct WorkloadRolloutPane: View {
 
             ForEach(Array(pods.prefix(4))) { pod in
                 let isSelected = selectedPodID == pod.id
+                let alertState = alertState(for: pod)
                 Button {
                     onSelectPod(pod)
                 } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 8) {
                             Circle()
-                                .fill(pod.phase.tint)
+                                .fill(color(for: alertState, default: pod.phase.tint))
                                 .frame(width: 8, height: 8)
                             Text(pod.name)
                                 .font(.caption.monospaced())
@@ -2216,7 +2977,7 @@ private struct WorkloadRolloutPane: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isSelected ? Color.accentColor.opacity(0.16) : Color(nsColor: .underPageBackgroundColor))
+                            .fill(backgroundColor(for: pod, isSelected: isSelected, alertState: alertState, base: Color(nsColor: .underPageBackgroundColor)))
                     )
                 }
                 .buttonStyle(.plain)
@@ -2235,10 +2996,17 @@ private struct WorkloadRolloutPane: View {
             }
         }
         .padding(12)
-        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(nodeHighlight(for: nodeState))
+                )
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(containsSelection ? Color.accentColor.opacity(0.6) : Color.gray.opacity(0.12), lineWidth: containsSelection ? 1.5 : 1)
+                .stroke(nodeBorderColor(for: nodeState, highlighted: containsSelection), lineWidth: containsSelection ? 1.5 : 1)
         )
     }
 
@@ -2284,9 +3052,8 @@ private struct WorkloadRolloutPane: View {
                     }
 
                     HStack(spacing: 12) {
-                        Text(endpointsText(nodeCount: stat.nodeEndpointCount, total: stat.service.endpointCount))
+                        serviceHealthChip(for: stat.service)
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
 
                         Text("p50 \(formatLatency(stat.service.latencyP50))")
                             .font(.caption2)
@@ -2306,11 +3073,6 @@ private struct WorkloadRolloutPane: View {
         }
     }
 
-    private func endpointsText(nodeCount: Int, total: Int) -> String {
-        guard total > 0 else { return "0 endpoints" }
-        return "\(nodeCount)/\(total) endpoints"
-    }
-
     private func formatLatency(_ latency: TimeInterval?) -> String {
         guard let latency else { return "—" }
         if latency >= 1 {
@@ -2320,11 +3082,98 @@ private struct WorkloadRolloutPane: View {
         return milliseconds.formatted(.number.precision(.fractionLength(0...1))) + "ms"
     }
 
+    @ViewBuilder
+    private func serviceHealthChip(for service: ServiceSummary) -> some View {
+        let total = service.totalEndpointCount
+        if total == 0 {
+            Text("No endpoints")
+                .foregroundStyle(.secondary)
+        } else {
+            let state = service.healthState
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(state.tint)
+                    .frame(width: 6, height: 6)
+                Text("\(service.endpointHealthDisplay) ready")
+                    .foregroundStyle(.primary)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(state.tint.opacity(0.12), in: Capsule())
+        }
+    }
+
     private struct ServiceCardStat: Identifiable {
         let service: ServiceSummary
         let nodeEndpointCount: Int
 
         var id: ServiceSummary.ID { service.id }
+    }
+
+    private enum PodAlertState {
+        case none
+        case warning
+        case error
+    }
+
+    private func alertState(for pod: PodSummary) -> PodAlertState {
+        guard let entry = eventsByPod[pod.name] else { return .none }
+        if entry.errors > 0 { return .error }
+        if entry.warnings > 0 { return .warning }
+        return .none
+    }
+
+    private func nodeAlertState(for pods: [PodSummary]) -> PodAlertState {
+        var state: PodAlertState = .none
+        for pod in pods {
+            let podState = alertState(for: pod)
+            if podState == .error { return .error }
+            if podState == .warning { state = .warning }
+        }
+        return state
+    }
+
+    private func backgroundColor(for pod: PodSummary, isSelected: Bool, alertState: PodAlertState, base: Color = Color(nsColor: .textBackgroundColor)) -> Color {
+        if isSelected { return Color.accentColor.opacity(0.18) }
+        switch alertState {
+        case .error: return Color.red.opacity(0.18)
+        case .warning: return Color.orange.opacity(0.14)
+        case .none: return base
+        }
+    }
+
+    private func borderColor(for alertState: PodAlertState, isSelected: Bool) -> Color {
+        if isSelected { return Color.accentColor.opacity(0.6) }
+        switch alertState {
+        case .error: return Color.red.opacity(0.5)
+        case .warning: return Color.orange.opacity(0.4)
+        case .none: return Color.gray.opacity(0.15)
+        }
+    }
+
+    private func nodeHighlight(for state: PodAlertState) -> Color {
+        switch state {
+        case .error: return Color.red.opacity(0.12)
+        case .warning: return Color.orange.opacity(0.08)
+        case .none: return Color.clear
+        }
+    }
+
+    private func nodeBorderColor(for state: PodAlertState, highlighted: Bool) -> Color {
+        if highlighted { return Color.accentColor.opacity(0.6) }
+        switch state {
+        case .error: return Color.red.opacity(0.5)
+        case .warning: return Color.orange.opacity(0.4)
+        case .none: return Color.gray.opacity(0.12)
+        }
+    }
+
+    private func color(for alertState: PodAlertState, default tint: Color) -> Color {
+        switch alertState {
+        case .error: return .red
+        case .warning: return .orange
+        case .none: return tint
+        }
     }
 
     private enum RolloutSeriesLabel: String, CaseIterable {
@@ -2380,6 +3229,50 @@ private struct WorkloadRolloutPane: View {
         let category: Category
         let message: String
         let count: Int
+    }
+
+    private enum RolloutHealthState: String {
+        case healthy
+        case warning
+        case failing
+
+        var tint: Color {
+            switch self {
+            case .healthy: return .green
+            case .warning: return .orange
+            case .failing: return .red
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .healthy: return "checkmark.seal.fill"
+            case .warning: return "exclamationmark.triangle.fill"
+            case .failing: return "xmark.octagon.fill"
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .healthy: return "Healthy"
+            case .warning: return "Warning"
+            case .failing: return "Failing"
+            }
+        }
+    }
+
+    private struct RolloutHealthSegment: Identifiable {
+        let id = UUID()
+        let start: Date
+        let end: Date
+        let state: RolloutHealthState
+    }
+
+    private struct RolloutStatusChange: Identifiable {
+        let id = UUID()
+        let timestamp: Date
+        let state: RolloutHealthState
+        let readinessRatio: Double
     }
 }
 private enum WorkloadInspectorTab: String, CaseIterable, Identifiable {
@@ -2657,9 +3550,25 @@ private struct ResourceInspector: View {
                 }
 
                 InspectorSection(title: "Traffic") {
-                    InspectorField(label: "Endpoints", value: service.endpointCount > 0 ? "\(service.endpointCount)" : "—", monospaced: true)
+                    InspectorField(
+                        label: "Endpoint Health",
+                        value: service.totalEndpointCount > 0 ? service.endpointHealthDisplay : "—",
+                        valueColor: service.totalEndpointCount > 0 ? service.healthState.tint : .secondary,
+                        monospaced: true
+                    )
                     InspectorField(label: "Latency p50", value: formatLatency(service.latencyP50))
                     InspectorField(label: "Latency p95", value: formatLatency(service.latencyP95))
+                }
+
+                if !service.readyPods.isEmpty || !service.notReadyPods.isEmpty {
+                    InspectorSection(title: "Endpoints") {
+                        if !service.readyPods.isEmpty {
+                            InspectorField(label: "Ready", value: service.readyPods.joined(separator: ", "), lineLimit: 3)
+                        }
+                        if !service.notReadyPods.isEmpty {
+                            InspectorField(label: "Not Ready", value: service.notReadyPods.joined(separator: ", "), valueColor: Color.orange, lineLimit: 3)
+                        }
+                    }
                 }
 
                 InspectorSection(title: "Age") {
@@ -2696,6 +3605,39 @@ private struct ResourceInspector: View {
                 InspectorSection(title: "Routing") {
                     InspectorField(label: "Hosts", value: ingress.hostRules.isEmpty ? "—" : ingress.hostRules)
                     InspectorField(label: "Service Targets", value: ingress.serviceTargets.isEmpty ? "—" : ingress.serviceTargets)
+                }
+
+                if !ingress.routes.isEmpty {
+                    InspectorSection(title: "Routes") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(ingress.routes) { route in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(route.host)
+                                        .font(.caption.monospaced())
+                                    Image(systemName: "arrow.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text(route.path)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text(route.service)
+                                        .font(.caption.monospaced())
+                                    if let port = route.port {
+                                        Text(":\(port)")
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(Color(nsColor: .underPageBackgroundColor))
+                                )
+                            }
+                        }
+                    }
                 }
 
                 InspectorSection(title: "Age") {
@@ -2819,7 +3761,8 @@ private struct ResourceInspector: View {
         case .nodes:
             NodesSection(
                 cluster: cluster,
-                sortOption: $nodeSortOption,
+                sortOption: nodeSortBinding,
+                filterState: model.nodeFilterState,
                 isNodeBusy: { model.isNodeActionInProgress(contextName: cluster.contextName, nodeName: $0.name) },
                 nodeActionError: { model.nodeActionError(contextName: cluster.contextName, nodeName: $0.name) },
                 onShowDetails: { handleNodeDetails($0) },
@@ -2830,7 +3773,7 @@ private struct ResourceInspector: View {
                 onDelete: { handleNodeDelete($0) }
             )
         case .config:
-            ConfigSection(cluster: cluster, namespace: namespace, isConnected: isConnected)
+            ConfigSection(cluster: cluster, namespace: namespace, isConnected: isConnected, filterState: model.configFilterState)
         case .namespaces:
             let namespaces = model.currentNamespaces ?? []
             NamespacesSection(
@@ -2967,11 +3910,20 @@ extension ClusterDetailView {
     }
 
     private func handleShell(_ pod: PodSummary) {
+        guard let sourceNamespace = namespace(forPod: pod), sourceNamespace.permissions.canExecPods else {
+            let reason = namespace(forPod: pod)?.permissions.reason(for: .execPods) ?? "You do not have permission to exec into pods in this namespace."
+            model.error = AppModelError(message: reason)
+            return
+        }
         focusPod(pod, tab: .exec)
     }
 
     private func handleEvict(_ pod: PodSummary) {
-        guard let sourceNamespace = namespace(forPod: pod) else { return }
+        guard let sourceNamespace = namespace(forPod: pod), sourceNamespace.permissions.canDeletePods else {
+            let reason = namespace(forPod: pod)?.permissions.reason(for: .deletePods) ?? "You do not have permission to evict pods in this namespace."
+            model.error = AppModelError(message: reason)
+            return
+        }
         model.selectedNamespaceID = sourceNamespace.id
         selectedTab = .workloadsPods
         selectedPodIDs = Set([pod.id])
@@ -2982,31 +3934,45 @@ extension ClusterDetailView {
     }
 
     private func handleLogs(_ pod: PodSummary) {
+        guard let sourceNamespace = namespace(forPod: pod), sourceNamespace.permissions.canViewPodLogs else {
+            let reason = namespace(forPod: pod)?.permissions.reason(for: .viewPodLogs) ?? "You do not have permission to view pod logs in this namespace."
+            model.error = AppModelError(message: reason)
+            return
+        }
         focusPod(pod, tab: .logs)
     }
 
     private func handleEdit(_ pod: PodSummary) {
+        guard let sourceNamespace = namespace(forPod: pod), sourceNamespace.permissions.canGetPods else {
+            let reason = namespace(forPod: pod)?.permissions.reason(for: .getPods) ?? "You do not have permission to fetch pod manifests in this namespace."
+            model.error = AppModelError(message: reason)
+            return
+        }
         focusPod(pod, tab: .yaml)
     }
 
     private func selectNodeSort(field: NodeSortField) {
-        if nodeSortOption.field == field {
-            nodeSortOption.toggleDirection()
+        if model.nodeSortOption.field == field {
+            model.nodeSortOption.toggleDirection()
         } else {
-            nodeSortOption = NodeSortOption(field: field, direction: SortDirection.ascending)
+            model.nodeSortOption = NodeSortOption(field: field, direction: .ascending)
         }
     }
 
     private func selectWorkloadSort(field: WorkloadSortField) {
-        if workloadSortOption.field == field {
-            workloadSortOption.toggleDirection()
+        if model.workloadSortOption.field == field {
+            model.workloadSortOption.toggleDirection()
         } else {
-            workloadSortOption = WorkloadSortOption(field: field, direction: SortDirection.ascending)
+            model.workloadSortOption = WorkloadSortOption(field: field, direction: .ascending)
         }
     }
 
     private func handleDelete(_ pod: PodSummary) {
-        guard let sourceNamespace = namespace(forPod: pod) else { return }
+        guard let sourceNamespace = namespace(forPod: pod), sourceNamespace.permissions.canDeletePods else {
+            let reason = namespace(forPod: pod)?.permissions.reason(for: .deletePods) ?? "You do not have permission to delete pods in this namespace."
+            model.error = AppModelError(message: reason)
+            return
+        }
         model.selectedNamespaceID = sourceNamespace.id
         selectedTab = .workloadsPods
         selectedPodIDs = Set([pod.id])
@@ -3017,13 +3983,89 @@ extension ClusterDetailView {
     }
 
     private func handlePortForward(_ pod: PodSummary) {
-        if let sourceNamespace = namespace(forPod: pod) {
-            model.selectedNamespaceID = sourceNamespace.id
+        guard let sourceNamespace = namespace(forPod: pod), sourceNamespace.permissions.canPortForwardPods else {
+            let reason = namespace(forPod: pod)?.permissions.reason(for: .portForwardPods) ?? "You do not have permission to port-forward pods in this namespace."
+            model.error = AppModelError(message: reason)
+            return
         }
+        model.selectedNamespaceID = sourceNamespace.id
         selectedTab = .workloadsPods
         selectedPodIDs = [pod.id]
         selectedPodID = pod.id
         showingPortForward = true
+    }
+
+    private func servicePermissions(for service: ServiceSummary) -> NamespacePermissions? {
+        namespace(forService: service)?.permissions
+    }
+
+    private func pvcPermissions(for claim: PersistentVolumeClaimSummary) -> NamespacePermissions? {
+        namespace(forPVC: claim)?.permissions
+    }
+
+    private func handleServiceInspect(_ service: ServiceSummary) {
+        guard let sourceNamespace = namespace(forService: service) else { return }
+        model.selectedNamespaceID = sourceNamespace.id
+        selectedTab = .network
+        networkResourceFocus = .services
+        selectedServiceIDs = [service.id]
+        syncInspectorSelection()
+    }
+
+    private func handleServiceEdit(_ service: ServiceSummary) {
+        guard let sourceNamespace = namespace(forService: service) else { return }
+        guard sourceNamespace.permissions.canEditServices else {
+            let reason = sourceNamespace.permissions.reason(for: .editServices) ?? "You do not have permission to edit services in this namespace."
+            model.error = AppModelError(message: reason)
+            return
+        }
+        Task {
+            await model.editServiceResource(cluster: cluster, namespace: sourceNamespace, service: service)
+        }
+    }
+
+    private func handleServiceDelete(_ service: ServiceSummary) {
+        guard let sourceNamespace = namespace(forService: service) else { return }
+        guard sourceNamespace.permissions.canDeleteServices else {
+            let reason = sourceNamespace.permissions.reason(for: .deleteServices) ?? "You do not have permission to delete services in this namespace."
+            model.error = AppModelError(message: reason)
+            return
+        }
+        Task {
+            await model.deleteServiceResource(cluster: cluster, namespace: sourceNamespace, service: service)
+        }
+    }
+
+    private func handlePVCInspect(_ claim: PersistentVolumeClaimSummary) {
+        guard let sourceNamespace = namespace(forPVC: claim) else { return }
+        model.selectedNamespaceID = sourceNamespace.id
+        selectedTab = .storage
+        selectedPVCIDs = [claim.id]
+        syncInspectorSelection()
+    }
+
+    private func handlePVCEdit(_ claim: PersistentVolumeClaimSummary) {
+        guard let sourceNamespace = namespace(forPVC: claim) else { return }
+        guard sourceNamespace.permissions.canEditPersistentVolumeClaims else {
+            let reason = sourceNamespace.permissions.reason(for: .editPersistentVolumeClaims) ?? "You do not have permission to edit persistent volume claims in this namespace."
+            model.error = AppModelError(message: reason)
+            return
+        }
+        Task {
+            await model.editPersistentVolumeClaim(cluster: cluster, namespace: sourceNamespace, claim: claim)
+        }
+    }
+
+    private func handlePVCDelete(_ claim: PersistentVolumeClaimSummary) {
+        guard let sourceNamespace = namespace(forPVC: claim) else { return }
+        guard sourceNamespace.permissions.canDeletePersistentVolumeClaims else {
+            let reason = sourceNamespace.permissions.reason(for: .deletePersistentVolumeClaims) ?? "You do not have permission to delete persistent volume claims in this namespace."
+            model.error = AppModelError(message: reason)
+            return
+        }
+        Task {
+            await model.deletePersistentVolumeClaim(cluster: cluster, namespace: sourceNamespace, claim: claim)
+        }
     }
 
     private func focusPod(_ pod: PodSummary, tab: PodInspectorTab) {
@@ -3121,6 +4163,72 @@ private func podBelongs(to workload: WorkloadSummary, pod: PodSummary) -> Bool {
 }
 
 private extension ClusterDetailView {
+    func applyQuickSearchSelection(_ target: AppModel.QuickSearchTarget) {
+        resourceSearchText = ""
+        pendingQuickSearchTarget = target
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            pendingQuickSearchTarget = nil
+        }
+
+        switch target {
+        case let .tab(tab):
+            selectedTab = tab
+
+        case .namespace:
+            selectedTab = .namespaces
+
+        case let .workload(kind, _, workloadID):
+            selectedTab = workloadTab(for: kind)
+            selectedWorkloadIDs = Set([workloadID])
+            workloadInspectorTab = .summary
+
+        case let .pod(_, podID):
+            selectedTab = .workloadsPods
+            selectedPodIDs = Set([podID])
+            selectedPodID = podID
+            podInspectorTab = .summary
+
+        case let .node(nodeID):
+            selectedTab = .nodes
+            detailNode = cluster.nodes.first(where: { $0.id == nodeID })
+
+        case let .helm(releaseID):
+            selectedTab = .helm
+            selectedHelmIDs = Set([releaseID])
+
+        case let .service(_, serviceID):
+            selectedTab = .network
+            networkResourceFocus = .services
+            selectedServiceIDs = Set([serviceID])
+            selectedIngressIDs.removeAll()
+
+        case let .ingress(_, ingressID):
+            selectedTab = .network
+            networkResourceFocus = .ingresses
+            selectedIngressIDs = Set([ingressID])
+            selectedServiceIDs.removeAll()
+
+        case let .persistentVolumeClaim(_, claimID):
+            selectedTab = .storage
+            selectedPVCIDs = Set([claimID])
+
+        case .configResource:
+            selectedTab = .config
+        }
+    }
+
+    func workloadTab(for kind: WorkloadKind) -> ClusterDetailView.Tab {
+        switch kind {
+        case .deployment: return .workloadsDeployments
+        case .statefulSet: return .workloadsStatefulSets
+        case .daemonSet: return .workloadsDaemonSets
+        case .cronJob: return .workloadsCronJobs
+        case .replicaSet: return .workloadsReplicaSets
+        case .replicationController: return .workloadsReplicationControllers
+        case .job: return .workloadsJobs
+        }
+    }
+
     func namespace(forWorkload workload: WorkloadSummary) -> Namespace? {
         if let namespace, namespace.id != AppModel.allNamespacesNamespaceID {
             return namespace
@@ -3159,6 +4267,28 @@ private extension ClusterDetailView {
         }
         return cluster.namespaces.first(where: { ns in
             ns.pods.contains { $0.id == podID }
+        })
+    }
+
+    func namespace(forService service: ServiceSummary) -> Namespace? {
+        if let namespace,
+           namespace.id != AppModel.allNamespacesNamespaceID,
+           namespace.services.contains(where: { $0.id == service.id }) {
+            return namespace
+        }
+        return cluster.namespaces.first(where: { ns in
+            ns.services.contains { $0.id == service.id }
+        })
+    }
+
+    func namespace(forPVC claim: PersistentVolumeClaimSummary) -> Namespace? {
+        if let namespace,
+           namespace.id != AppModel.allNamespacesNamespaceID,
+           namespace.persistentVolumeClaims.contains(where: { $0.id == claim.id }) {
+            return namespace
+        }
+        return cluster.namespaces.first(where: { ns in
+            ns.persistentVolumeClaims.contains { $0.id == claim.id }
         })
     }
 }
@@ -3396,25 +4526,7 @@ private struct PodDetailSheetView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(events) { event in
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(event.type.rawValue.capitalized)
-                                .font(.caption.bold())
-                                .foregroundStyle(event.type.tint)
-                                .frame(width: 70, alignment: .leading)
-                            Text(event.message)
-                                .font(.caption)
-                            Spacer()
-                            Text("x\(event.count)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(event.age.displayText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                EventTimelineView(events: events)
             }
         }
     }
@@ -3502,6 +4614,14 @@ struct PodLogsPane: View {
     @State private var errorMessage: String?
     @State private var selectedContainer: String?
 
+    private var canStreamLogs: Bool {
+        cluster.isConnected && namespace.permissions.canViewPodLogs
+    }
+
+    private var deniedReason: String? {
+        namespace.permissions.reason(for: .viewPodLogs)
+    }
+
     init(
         cluster: Cluster,
         namespace: Namespace,
@@ -3529,7 +4649,9 @@ struct PodLogsPane: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        Group {
+            if canStreamLogs {
+                VStack(alignment: .leading, spacing: 12) {
             header
             if pod.containerNames.count > 1 {
                 Picker("Container", selection: containerBinding) {
@@ -3573,8 +4695,17 @@ struct PodLogsPane: View {
                 .font(.caption)
                 .foregroundStyle(.red)
             }
+                }
+            } else {
+                ContentUnavailableView(
+                    "Logs unavailable",
+                    systemImage: "lock",
+                    description: Text(deniedReason ?? "Your account lacks permission to read pod logs (pods/log).")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
-        .onAppear { restartStreaming() }
+        .onAppear { if canStreamLogs { restartStreaming() } }
         .onDisappear { streamTask?.cancel() }
         .onChange(of: selectedContainer) { _, _ in
             applySelectedContainer()
@@ -3613,6 +4744,7 @@ struct PodLogsPane: View {
     }
 
     private func restartStreaming() {
+        guard canStreamLogs else { return }
         streamTask?.cancel()
         entries.removeAll()
         errorMessage = nil
@@ -3768,6 +4900,8 @@ private struct SecretDetailSheet: View {
 
     private var canReveal: Bool { secret.permissions.canReveal }
     private var canEditSecret: Bool { secret.permissions.canEdit }
+    private var revealReason: String? { secret.permissions.revealReason }
+    private var editReason: String? { secret.permissions.editReason }
     private var pendingDiffs: [SecretDiffSummary] { SecretDiffSummary.compute(original: secret.secretEntries, updated: editors) }
     private var hasPendingChanges: Bool { !pendingDiffs.isEmpty }
     private var actionFeedback: SecretActionFeedback? {
@@ -3800,7 +4934,13 @@ private struct SecretDetailSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach($editors) { $entry in
-                            SecretEntryEditorView(entry: $entry, canReveal: canReveal, canEdit: canEditSecret)
+                            SecretEntryEditorView(
+                                entry: $entry,
+                                canReveal: canReveal,
+                                canEdit: canEditSecret,
+                                revealReason: revealReason,
+                                editReason: editReason
+                            )
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -3819,6 +4959,7 @@ private struct SecretDetailSheet: View {
                 Button("Save") { save() }
                     .buttonStyle(.borderedProminent)
                     .disabled(isSaving || editors.isEmpty || !canEditSecret || !hasPendingChanges)
+                    .optionalHelp(!canEditSecret ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
             }
         }
         .padding(24)
@@ -3871,12 +5012,12 @@ private struct SecretDetailSheet: View {
         if !canReveal || !canEditSecret {
             VStack(alignment: .leading, spacing: 4) {
                 if !canReveal {
-                    Label("You do not have permission to reveal this secret's plaintext values.", systemImage: "lock.slash")
+                    Label(revealReason ?? "You do not have permission to reveal this secret's plaintext values.", systemImage: "lock.slash")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 if !canEditSecret {
-                    Label("Editing is disabled by Kubernetes RBAC for your account.", systemImage: "hand.raised")
+                    Label(editReason ?? "Editing is disabled by Kubernetes RBAC for your account.", systemImage: "hand.raised")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -3978,6 +5119,7 @@ private struct ConfigMapDetailSheet: View {
     @State private var isSaving = false
 
     private var canEditConfigMap: Bool { configMap.permissions.canEdit }
+    private var editReason: String? { configMap.permissions.editReason }
     private var pendingDiffs: [ConfigMapDiffSummary] { ConfigMapDiffSummary.compute(original: configMap.configMapEntries, updated: editors) }
     private var hasPendingChanges: Bool { !pendingDiffs.isEmpty }
     private var actionFeedback: ConfigMapActionFeedback? {
@@ -4011,7 +5153,7 @@ private struct ConfigMapDetailSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach($editors) { $entry in
-                            ConfigMapEntryEditorView(entry: $entry, canEdit: canEditConfigMap)
+                            ConfigMapEntryEditorView(entry: $entry, canEdit: canEditConfigMap, editReason: editReason)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -4033,6 +5175,7 @@ private struct ConfigMapDetailSheet: View {
                 Button("Save") { save() }
                     .buttonStyle(.borderedProminent)
                     .disabled(isSaving || !canEditConfigMap || !hasPendingChanges)
+                    .optionalHelp(!canEditConfigMap ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
             }
         }
         .padding(24)
@@ -4076,7 +5219,7 @@ private struct ConfigMapDetailSheet: View {
     @ViewBuilder
     private var permissionBanner: some View {
         if !canEditConfigMap {
-            Label("Editing is disabled by Kubernetes RBAC for your account.", systemImage: "hand.raised")
+            Label(editReason ?? "Editing is disabled by Kubernetes RBAC for your account.", systemImage: "hand.raised")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -4155,6 +5298,7 @@ private struct ConfigMapDetailSheet: View {
 private struct ConfigMapEntryEditorView: View {
     @Binding var entry: ConfigMapEntryEditor
     let canEdit: Bool
+    let editReason: String?
 
     private var isEditable: Bool {
         canEdit && entry.isEditable
@@ -4189,6 +5333,7 @@ private struct ConfigMapEntryEditorView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(Color.gray.opacity(0.2))
                 )
+                .optionalHelp(!isEditable ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
             } else {
                 TextEditor(text: Binding(
                     get: { entry.value },
@@ -4200,6 +5345,7 @@ private struct ConfigMapEntryEditorView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(Color.gray.opacity(0.2))
                 )
+                .optionalHelp(!canEdit ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
             }
         }
         .padding(12)
@@ -4216,6 +5362,8 @@ private struct SecretEntryEditorView: View {
     @Binding var entry: SecretEntryEditor
     let canReveal: Bool
     let canEdit: Bool
+    let revealReason: String?
+    let editReason: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -4241,7 +5389,7 @@ private struct SecretEntryEditorView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!canReveal || !entry.canDecode)
-                .help(canReveal ? (entry.canDecode ? (entry.isDecodedVisible ? "Hide decoded value" : "Show decoded value") : "Value is not decodable; editing in plaintext is disabled.") : "Reveal disabled by RBAC policy.")
+                .help(canReveal ? (entry.canDecode ? (entry.isDecodedVisible ? "Hide decoded value" : "Show decoded value") : "Value is not decodable; editing in plaintext is disabled.") : (revealReason ?? "Reveal disabled by RBAC policy."))
             }
 
             if entry.isDecodedVisible {
@@ -4256,6 +5404,7 @@ private struct SecretEntryEditorView: View {
                         .stroke(Color.gray.opacity(0.2))
                 )
                 .disabled(!canEdit)
+                .optionalHelp(!canEdit ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
             } else {
                 TextEditor(text: Binding(
                     get: { entry.base64EditorValue },
@@ -4268,6 +5417,7 @@ private struct SecretEntryEditorView: View {
                         .stroke(Color.gray.opacity(0.2))
                 )
                 .disabled(!canEdit)
+                .optionalHelp(!canEdit ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
             }
         }
         .padding(12)
@@ -4310,9 +5460,9 @@ private struct DiffRow: View {
         }
     }
 
-    private func label(for value: String) -> String {
-        isBase64 ? "[base64] " + value : value
-    }
+private func label(for value: String) -> String {
+    isBase64 ? "[base64] " + value : value
+}
 }
 
 private struct SectionBox<Content: View>: View {
@@ -4324,6 +5474,17 @@ private struct SectionBox<Content: View>: View {
             Text(title)
                 .font(.headline)
             content
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func optionalHelp(_ message: String?) -> some View {
+        if let message {
+            self.help(message)
+        } else {
+            self
         }
     }
 }
@@ -4563,104 +5724,6 @@ private struct OverviewSection: View {
     private func updatedLabel(for metrics: ClusterOverviewMetrics) -> String? {
         guard metrics.timestamp > .distantPast else { return nil }
         return relativeFormatter.localizedString(for: metrics.timestamp, relativeTo: Date())
-    }
-}
-
-private enum SortDirection: String, CaseIterable {
-    case ascending
-    case descending
-
-    mutating func toggle() {
-        self = self == .ascending ? .descending : .ascending
-    }
-
-    var symbolName: String {
-        switch self {
-        case .ascending: return "arrow.up"
-        case .descending: return "arrow.down"
-        }
-    }
-
-    var shortGlyph: String {
-        switch self {
-        case .ascending: return "↑"
-        case .descending: return "↓"
-        }
-    }
-
-    var toggleLabel: String {
-        switch self {
-        case .ascending: return "Sort Descending"
-        case .descending: return "Sort Ascending"
-        }
-    }
-}
-
-private struct NodeSortOption: Equatable {
-    var field: NodeSortField
-    var direction: SortDirection
-
-    mutating func toggleDirection() {
-        direction.toggle()
-    }
-
-    var description: String {
-        "\(field.title) \(direction.shortGlyph)"
-    }
-
-    static let `default` = NodeSortOption(field: .name, direction: SortDirection.ascending)
-}
-
-private enum NodeSortField: String, CaseIterable, Identifiable {
-    case name
-    case warnings
-    case cpu
-    case memory
-    case disk
-    case age
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .name: return "Name"
-        case .warnings: return "Warnings"
-        case .cpu: return "CPU"
-        case .memory: return "Memory"
-        case .disk: return "Disk"
-        case .age: return "Age"
-        }
-    }
-}
-
-private struct WorkloadSortOption: Equatable {
-    var field: WorkloadSortField
-    var direction: SortDirection
-
-    mutating func toggleDirection() {
-        direction.toggle()
-    }
-
-    var description: String {
-        "\(field.title) \(direction.shortGlyph)"
-    }
-
-    static let `default` = WorkloadSortOption(field: .name, direction: SortDirection.ascending)
-}
-
-private enum WorkloadSortField: String, CaseIterable, Identifiable {
-    case name
-    case age
-    case readiness
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .name: return "Name"
-        case .age: return "Age"
-        case .readiness: return "Ready"
-        }
     }
 }
 
@@ -4911,6 +5974,8 @@ private struct WorkloadListView: View {
     let showsKindColumn: Bool
     let searchText: String
     let sortOption: WorkloadSortOption
+    let filter: WorkloadFilterState
+    let focusID: WorkloadSummary.ID?
     @Binding var selection: Set<WorkloadSummary.ID>
     let onInspect: (WorkloadSummary) -> Void
     let onFocusPods: (WorkloadSummary) -> Void
@@ -4925,8 +5990,9 @@ private struct WorkloadListView: View {
 
     private var filteredWorkloads: [WorkloadSummary] {
         let normalized = searchTerm
-        guard !normalized.isEmpty else { return baseWorkloads }
-        return baseWorkloads.filter { workload in
+        let filtered = baseWorkloads.filter { filter.matches($0) }
+        guard !normalized.isEmpty else { return filtered }
+        return filtered.filter { workload in
             workload.name.localizedCaseInsensitiveContains(normalized) ||
             workload.kind.displayName.localizedCaseInsensitiveContains(normalized)
         }
@@ -4976,6 +6042,10 @@ private struct WorkloadListView: View {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var hasActiveFilter: Bool {
+        !filter.statuses.isEmpty || !filter.labelSelectors.isEmpty
+    }
+
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -5019,12 +6089,26 @@ private struct WorkloadListView: View {
                 systemImage: "shippingbox",
                 description: Text("\(label) appear once resources are discovered in the namespace.")
             )
-        } else if !searchTerm.isEmpty && filteredWorkloads.isEmpty {
-            ContentUnavailableView(
-                "No Results",
-                systemImage: "magnifyingglass",
-                description: Text("No workloads match \"\(searchTerm)\".")
-            )
+        } else if filteredWorkloads.isEmpty {
+            if !searchTerm.isEmpty && hasActiveFilter {
+                ContentUnavailableView(
+                    "No Results",
+                    systemImage: "magnifyingglass",
+                    description: Text("No workloads match your search or filters.")
+                )
+            } else if !searchTerm.isEmpty {
+                ContentUnavailableView(
+                    "No Results",
+                    systemImage: "magnifyingglass",
+                    description: Text("No workloads match \"\(searchTerm)\".")
+                )
+            } else {
+                ContentUnavailableView(
+                    "No Results",
+                    systemImage: "magnifyingglass",
+                    description: Text("Adjust filters to see workloads in this view.")
+                )
+            }
         } else {
             workloadsTable
         }
@@ -5038,6 +6122,7 @@ private struct WorkloadListView: View {
             selection: $selection,
             allowsMultipleSelection: false,
             minimumRowHeight: 32,
+            focusID: focusID,
             onRowDoubleTap: { workload in onInspect(workload) }
         )
     }
@@ -5149,6 +6234,12 @@ private struct WorkloadListView: View {
         )
 
         columns.append(
+            FixedTableColumn("Alerts", width: WorkloadColumnWidth.alerts, alignment: .trailing) { workload in
+                workloadAlertsCell(for: workload)
+            }
+        )
+
+        columns.append(
             FixedTableColumn("", width: WorkloadColumnWidth.actions, alignment: .trailing) { workload in
                 Menu {
                     Button("Inspect") { onInspect(workload) }
@@ -5218,11 +6309,63 @@ private struct WorkloadListView: View {
     private func trimSelection(valid: Set<WorkloadSummary.ID>) {
         selection = selection.intersection(valid)
     }
+
+    @ViewBuilder
+    private func workloadAlertsCell(for workload: WorkloadSummary) -> some View {
+        let counts = workloadEventCounts(for: workload)
+        if counts.errors == 0 && counts.warnings == 0 {
+            Text("—")
+                .foregroundStyle(.secondary)
+        } else {
+            HStack(spacing: 6) {
+                if counts.errors > 0 {
+                    Label("\(counts.errors)", systemImage: "exclamationmark.octagon.fill")
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(Color.red)
+                        .help("\(counts.errors) error event\(counts.errors == 1 ? "" : "s")")
+                }
+                if counts.warnings > 0 {
+                    Label("\(counts.warnings)", systemImage: "exclamationmark.triangle.fill")
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(Color.orange)
+                        .help("\(counts.warnings) warning event\(counts.warnings == 1 ? "" : "s")")
+                }
+            }
+        }
+    }
+
+    private func workloadEventCounts(for workload: WorkloadSummary) -> (warnings: Int, errors: Int) {
+        guard let namespace else { return (0, 0) }
+        let name = workload.name.lowercased()
+        let podNames = namespace.pods
+            .filter { $0.controlledBy?.lowercased().contains(name) ?? false }
+            .map { $0.name.lowercased() }
+
+        var warnings = 0
+        var errors = 0
+        for event in namespace.events {
+            let message = event.message.lowercased()
+            let matchesWorkload = message.contains(name)
+            let matchesPod = podNames.contains { message.contains($0) }
+            guard matchesWorkload || matchesPod else { continue }
+            let count = max(event.count, 1)
+            switch event.type {
+            case .warning:
+                warnings += count
+            case .error:
+                errors += count
+            default:
+                break
+            }
+        }
+        return (warnings, errors)
+    }
 }
 
 private struct PodListView: View {
     let namespace: Namespace?
     let isConnected: Bool
+    let filter: PodFilterState
     @Binding var selection: Set<PodSummary.ID>
     @Binding var focusedID: PodSummary.ID?
     let searchText: String
@@ -5233,6 +6376,7 @@ private struct PodListView: View {
     let onPortForward: (PodSummary) -> Void
     let onEvict: (PodSummary) -> Void
     let onDelete: (PodSummary) -> Void
+    let focusID: PodSummary.ID?
 
     private var searchTerm: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5242,17 +6386,31 @@ private struct PodListView: View {
         namespace?.pods ?? []
     }
 
+    private var permissions: NamespacePermissions {
+        namespace?.permissions ?? NamespacePermissions()
+    }
+
+    private func permissionHelp(_ action: NamespacePermissionAction, fallback: String) -> String? {
+        guard !permissions.allows(action) else { return nil }
+        return permissions.reason(for: action) ?? fallback
+    }
+
     private var filteredPods: [PodSummary] {
         let sorted = basePods.sorted { lhs, rhs in
             lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
-        guard !searchTerm.isEmpty else { return sorted }
-        return sorted.filter { pod in
+        let filtered = sorted.filter { filter.matches($0) }
+        guard !searchTerm.isEmpty else { return filtered }
+        return filtered.filter { pod in
             pod.name.localizedCaseInsensitiveContains(searchTerm) ||
             pod.nodeName.localizedCaseInsensitiveContains(searchTerm) ||
             (pod.controlledBy ?? "").localizedCaseInsensitiveContains(searchTerm) ||
             pod.containerSummary.localizedCaseInsensitiveContains(searchTerm)
         }
+    }
+
+    private var hasActiveFilter: Bool {
+        filter.onlyWithWarnings || !filter.phases.isEmpty || !filter.labelSelectors.isEmpty
     }
 
     var body: some View {
@@ -5301,12 +6459,26 @@ private struct PodListView: View {
                 systemImage: "circle.grid.3x3.fill",
                 description: Text("Pods display here once workloads create them.")
             )
-        } else if !searchTerm.isEmpty && filteredPods.isEmpty {
-            ContentUnavailableView(
-                "No Results",
-                systemImage: "magnifyingglass",
-                description: Text("No pods match \"\(searchTerm)\".")
-            )
+        } else if filteredPods.isEmpty {
+            if !searchTerm.isEmpty && hasActiveFilter {
+                ContentUnavailableView(
+                    "No Results",
+                    systemImage: "magnifyingglass",
+                    description: Text("No pods match your search or filters.")
+                )
+            } else if !searchTerm.isEmpty {
+                ContentUnavailableView(
+                    "No Results",
+                    systemImage: "magnifyingglass",
+                    description: Text("No pods match \"\(searchTerm)\".")
+                )
+            } else {
+                ContentUnavailableView(
+                    "No Results",
+                    systemImage: "magnifyingglass",
+                    description: Text("Adjust filters to see pods in this view.")
+                )
+            }
         } else {
             podsTable
         }
@@ -5320,6 +6492,7 @@ private struct PodListView: View {
             selection: $selection,
             allowsMultipleSelection: true,
             minimumRowHeight: 34,
+            focusID: focusID,
             onRowTap: { pod in
                 handleFocus(afterTapping: pod)
             },
@@ -5353,6 +6526,9 @@ private struct PodListView: View {
                 Text(pod.phase.displayName)
                     .foregroundStyle(pod.phase.tint)
             },
+            FixedTableColumn("Alerts", width: PodColumnWidth.alerts, alignment: .trailing) { pod in
+                alertsCell(for: pod)
+            },
             FixedTableColumn("Age", width: PodColumnWidth.age) { pod in
                 Text(pod.ageDisplay)
                     .foregroundStyle(.secondary)
@@ -5360,21 +6536,29 @@ private struct PodListView: View {
             FixedTableColumn("", width: PodColumnWidth.actions, alignment: .trailing) { pod in
                 Menu {
                     Button("Inspect") { onShowDetails(pod) }
+                        .disabled(!isConnected || !permissions.canGetPods)
+                        .optionalHelp(permissionHelp(.getPods, fallback: "Requires get pods permission."))
                     Button("Logs") { onShowLogs(pod) }
-                        .disabled(!isConnected)
+                        .disabled(!isConnected || !permissions.canViewPodLogs)
+                        .optionalHelp(permissionHelp(.viewPodLogs, fallback: "Requires pods/log permission."))
                     Button("Exec") { onShowExec(pod) }
-                        .disabled(!isConnected)
+                        .disabled(!isConnected || !permissions.canExecPods)
+                        .optionalHelp(permissionHelp(.execPods, fallback: "Requires pods/exec permission."))
                     Button("YAML") { onShowYAML(pod) }
-                        .disabled(!isConnected)
+                        .disabled(!isConnected || !permissions.canGetPods)
+                        .optionalHelp(permissionHelp(.getPods, fallback: "Requires get pods permission."))
                     Divider()
                     Button("Port Forward") { onPortForward(pod) }
-                        .disabled(!isConnected)
+                        .disabled(!isConnected || !permissions.canPortForwardPods)
+                        .optionalHelp(permissionHelp(.portForwardPods, fallback: "Requires pods/portforward permission."))
                     Button("Evict") { onEvict(pod) }
-                        .disabled(!isConnected)
+                        .disabled(!isConnected || !permissions.canDeletePods)
+                        .optionalHelp(permissionHelp(.deletePods, fallback: "Requires delete pods permission."))
                     Button(role: .destructive) { onDelete(pod) } label: {
                         Text("Delete")
                     }
-                    .disabled(!isConnected)
+                    .disabled(!isConnected || !permissions.canDeletePods)
+                    .optionalHelp(permissionHelp(.deletePods, fallback: "Requires delete pods permission."))
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.title3)
@@ -5402,6 +6586,50 @@ private struct PodListView: View {
         } else if focusedID == pod.id {
             focusedID = selection.first
         }
+    }
+
+    @ViewBuilder
+    private func alertsCell(for pod: PodSummary) -> some View {
+        let counts = eventCounts(for: pod)
+        if counts.errors == 0 && counts.warnings == 0 {
+            Text("—")
+                .foregroundStyle(.secondary)
+        } else {
+            HStack(spacing: 6) {
+                if counts.errors > 0 {
+                    Label("\(counts.errors)", systemImage: "exclamationmark.octagon.fill")
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(Color.red)
+                        .help("\(counts.errors) error event\(counts.errors == 1 ? "" : "s")")
+                }
+                if counts.warnings > 0 {
+                    Label("\(counts.warnings)", systemImage: "exclamationmark.triangle.fill")
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(Color.orange)
+                        .help("\(counts.warnings) warning event\(counts.warnings == 1 ? "" : "s")")
+                }
+            }
+        }
+    }
+
+    private func eventCounts(for pod: PodSummary) -> (warnings: Int, errors: Int) {
+        guard let events = namespace?.events else { return (0, 0) }
+        let podName = pod.name.lowercased()
+        var warnings = 0
+        var errors = 0
+        for event in events {
+            let message = event.message.lowercased()
+            guard message.contains(podName) else { continue }
+            switch event.type {
+            case .warning:
+                warnings += max(event.count, 1)
+            case .error:
+                errors += max(event.count, 1)
+            default:
+                break
+            }
+        }
+        return (warnings, errors)
     }
 }
 
@@ -5535,6 +6763,10 @@ private struct NetworkListView: View {
     @Binding var serviceSelection: Set<ServiceSummary.ID>
     @Binding var ingressSelection: Set<IngressSummary.ID>
     let searchText: String
+    let servicePermissions: (ServiceSummary) -> NamespacePermissions?
+    let onInspectService: (ServiceSummary) -> Void
+    let onEditService: (ServiceSummary) -> Void
+    let onDeleteService: (ServiceSummary) -> Void
 
     private var searchTerm: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5629,7 +6861,10 @@ private struct NetworkListView: View {
                     columns: serviceColumns,
                     selection: $serviceSelection,
                     allowsMultipleSelection: true,
-                    minimumRowHeight: 32
+                    minimumRowHeight: 32,
+                    onRowDoubleTap: { service in
+                        onInspectService(service)
+                    }
                 )
             }
         }
@@ -5682,11 +6917,88 @@ private struct NetworkListView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             },
+            FixedTableColumn("Health", width: ServiceColumnWidth.health) { service in
+                serviceHealthBadge(for: service)
+            },
+            FixedTableColumn("Latency", width: ServiceColumnWidth.latency) { service in
+                Text(latencyDisplay(for: service))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            },
             FixedTableColumn("Age", width: ServiceColumnWidth.age) { service in
                 Text(service.age?.displayText ?? "—")
                     .foregroundStyle(.secondary)
+            },
+            FixedTableColumn("", width: ServiceColumnWidth.actions, alignment: .trailing) { service in
+                let permissions = servicePermissions(service)
+                let canEdit = isConnected && (permissions?.canEditServices ?? false)
+                let editReason = permissions?.reason(for: .editServices)
+                let canDelete = isConnected && (permissions?.canDeleteServices ?? false)
+                let deleteReason = permissions?.reason(for: .deleteServices)
+
+                Menu {
+                    Button("Inspect") { onInspectService(service) }
+                        .disabled(!isConnected)
+                    Button("Edit YAML…") {
+                        onEditService(service)
+                    }
+                    .disabled(!canEdit)
+                    .optionalHelp(!canEdit ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
+                    Button(role: .destructive) {
+                        onDeleteService(service)
+                    } label: {
+                        Text("Delete")
+                    }
+                    .disabled(!canDelete)
+                    .optionalHelp(!canDelete ? (deleteReason ?? "Requires delete services permission.") : nil)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.title3)
+                        .padding(2)
+                }
+                .menuStyle(.borderlessButton)
             }
         ]
+    }
+
+    @ViewBuilder
+    private func serviceHealthBadge(for service: ServiceSummary) -> some View {
+        let total = service.totalEndpointCount
+        if total == 0 {
+            Text("No endpoints")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else {
+            let state = service.healthState
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(state.tint)
+                    .frame(width: 8, height: 8)
+                Text("\(service.endpointHealthDisplay) ready")
+                    .font(.caption2)
+                    .foregroundStyle(.primary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(state.tint.opacity(0.12), in: Capsule())
+        }
+    }
+
+    private func latencyDisplay(for service: ServiceSummary) -> String {
+        guard let p50 = service.latencyP50 else { return "—" }
+        let p50Text = formatLatency(p50)
+        if let p95 = service.latencyP95 {
+            return "\(p50Text) / \(formatLatency(p95))"
+        }
+        return p50Text
+    }
+
+    private func formatLatency(_ latency: TimeInterval) -> String {
+        if latency >= 1 {
+            return latency.formatted(.number.precision(.fractionLength(2))) + "s"
+        }
+        let milliseconds = latency * 1_000
+        return milliseconds.formatted(.number.precision(.fractionLength(0...1))) + "ms"
     }
 
     private var ingressColumns: [FixedTableColumn<IngressSummary>] {
@@ -5721,11 +7033,115 @@ private struct NetworkListView: View {
     }
 }
 
+private struct PortForwardDashboard: View {
+    let cluster: Cluster
+    let namespace: Namespace?
+
+    @EnvironmentObject private var model: AppModel
+    private static let formatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    private var forwards: [ActivePortForward] {
+        model.activePortForwards.filter { forward in
+            guard forward.request.clusterID == cluster.id else { return false }
+            guard let namespace else { return true }
+            if namespace.id == AppModel.allNamespacesNamespaceID { return true }
+            return forward.request.namespace == namespace.name
+        }
+        .sorted { $0.startedAt > $1.startedAt }
+    }
+
+    var body: some View {
+        SectionBox(title: "Active Port Forwards") {
+            if forwards.isEmpty {
+                ContentUnavailableView(
+                    "No Active Forwards",
+                    systemImage: "bolt.horizontal",
+                    description: Text("Start a port forward from the pod inspector to monitor live connections.")
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(forwards) { forward in
+                        HStack(alignment: .center, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("localhost:\(forward.request.localPort) → \(forward.request.namespace)/\(forward.request.podName):\(forward.request.remotePort)")
+                                    .font(.caption.monospaced())
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(startedDescription(forward))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            statusBadge(for: forward)
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color(nsColor: .underPageBackgroundColor))
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func startedDescription(_ forward: ActivePortForward) -> String {
+        let relative = PortForwardDashboard.formatter.localizedString(for: forward.startedAt, relativeTo: Date())
+        return "Started \(relative)"
+    }
+
+    private func statusBadge(for forward: ActivePortForward) -> some View {
+        let (color, label, icon) = statusMetadata(forward.status)
+        return HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption2)
+            Text(label)
+                .font(.caption2)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Button {
+                Task { await model.stopPortForward(id: forward.id) }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption2)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Stop port forward")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.16), in: Capsule())
+        .foregroundStyle(color)
+    }
+
+    private func statusMetadata(_ status: PortForwardStatus) -> (Color, String, String) {
+        switch status {
+        case .establishing:
+            return (.blue, "Establishing", "hourglass")
+        case .active:
+            return (.green, "Active", "bolt.horizontal")
+        case .failed(let message):
+            let label = message.isEmpty ? "Failed" : message
+            return (.orange, label, "exclamationmark.triangle")
+        }
+    }
+}
+
 private struct StorageListView: View {
     let namespace: Namespace?
     let isConnected: Bool
     @Binding var selection: Set<PersistentVolumeClaimSummary.ID>
     let searchText: String
+    let claimPermissions: (PersistentVolumeClaimSummary) -> NamespacePermissions?
+    let onInspectClaim: (PersistentVolumeClaimSummary) -> Void
+    let onEditClaim: (PersistentVolumeClaimSummary) -> Void
+    let onDeleteClaim: (PersistentVolumeClaimSummary) -> Void
 
     private var searchTerm: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5784,7 +7200,10 @@ private struct StorageListView: View {
                     columns: pvcColumns,
                     selection: $selection,
                     allowsMultipleSelection: true,
-                    minimumRowHeight: 32
+                    minimumRowHeight: 32,
+                    onRowDoubleTap: { claim in
+                        onInspectClaim(claim)
+                    }
                 )
             }
         }
@@ -5824,6 +7243,31 @@ private struct StorageListView: View {
             FixedTableColumn("Age", width: PVCColumnWidth.age) { claim in
                 Text(claim.age?.displayText ?? "—")
                     .foregroundStyle(.secondary)
+            },
+            FixedTableColumn("", width: PVCColumnWidth.actions, alignment: .trailing) { claim in
+                let permissions = claimPermissions(claim)
+                let canEdit = isConnected && (permissions?.canEditPersistentVolumeClaims ?? false)
+                let editReason = permissions?.reason(for: .editPersistentVolumeClaims)
+                let canDelete = isConnected && (permissions?.canDeletePersistentVolumeClaims ?? false)
+                let deleteReason = permissions?.reason(for: .deletePersistentVolumeClaims)
+
+                Menu {
+                    Button("Inspect") { onInspectClaim(claim) }
+                        .disabled(!isConnected)
+                    Button("Edit YAML…") { onEditClaim(claim) }
+                        .disabled(!canEdit)
+                        .optionalHelp(!canEdit ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
+                    Button(role: .destructive) { onDeleteClaim(claim) } label: {
+                        Text("Delete")
+                    }
+                    .disabled(!canDelete)
+                    .optionalHelp(!canDelete ? (deleteReason ?? "Requires delete persistentvolumeclaims permission.") : nil)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.title3)
+                        .padding(2)
+                }
+                .menuStyle(.borderlessButton)
             }
         ]
     }
@@ -6485,6 +7929,7 @@ private struct ConfigSection: View {
     let cluster: Cluster
     let namespace: Namespace?
     let isConnected: Bool
+    let filterState: ConfigFilterState
     @EnvironmentObject private var model: AppModel
     @State private var selectedSecret: ConfigResourceSummary?
     @State private var selectedConfigMap: ConfigResourceSummary?
@@ -6512,6 +7957,7 @@ private struct ConfigSection: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let namespace {
+                let resources = namespace.configResources.filter { filterState.matches($0) }
                 VStack(alignment: .leading, spacing: 24) {
                     if namespace.configResources.isEmpty {
                         ContentUnavailableView(
@@ -6519,9 +7965,15 @@ private struct ConfigSection: View {
                             systemImage: "doc.text.magnifyingglass",
                             description: Text("ConfigMaps, Secrets, and related resources will appear here when present in the namespace.")
                         )
+                    } else if resources.isEmpty {
+                        ContentUnavailableView(
+                            "No Matching Resources",
+                            systemImage: "line.3.horizontal.decrease.circle",
+                            description: Text("Adjust filters to view config resources in this namespace.")
+                        )
                     } else {
                         ConfigResourceGroupsView(
-                            resources: namespace.configResources,
+                            resources: resources,
                             onOpenResource: { resource in
                                 switch resource.kind {
                                 case .secret:
@@ -7082,6 +8534,7 @@ private struct FixedColumnTable<Row: Identifiable>: View {
     var headerBackground: Color = Color(nsColor: .underPageBackgroundColor)
     var tableBackground: Color = Color(nsColor: .textBackgroundColor)
     var showsRowDividers: Bool = true
+    var focusID: Row.ID? = nil
     var onRowTap: ((Row) -> Void)? = nil
     var onRowDoubleTap: ((Row) -> Void)? = nil
     var rowBackground: ((Row, Bool) -> Color?)? = nil
@@ -7096,21 +8549,30 @@ private struct FixedColumnTable<Row: Identifiable>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                        rowView(for: row, index: index)
+        ScrollViewReader { proxy in
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                Divider()
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                            rowView(for: row, index: index)
+                                .id(row.id)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minHeight: minimumHeight, maxHeight: .infinity, alignment: .topLeading)
             }
-            .frame(minHeight: minimumHeight, maxHeight: .infinity, alignment: .topLeading)
+            .background(tableBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .onChange(of: focusID) { _, newValue in
+                guard let newValue else { return }
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(newValue, anchor: .center)
+                }
+            }
         }
-        .background(tableBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func rowView(for row: Row, index: Int) -> some View {
@@ -7200,7 +8662,10 @@ private enum ServiceColumnWidth {
     static let type: CGFloat = 120
     static let clusterIP: CGFloat = 160
     static let ports: CGFloat = 160
+    static let health: CGFloat = 120
+    static let latency: CGFloat = 130
     static let age: CGFloat = 80
+    static let actions: CGFloat = 52
 }
 
 private enum IngressColumnWidth {
@@ -7219,6 +8684,7 @@ private enum PVCColumnWidth {
     static let storageClass: CGFloat = 160
     static let volume: CGFloat = 160
     static let age: CGFloat = 80
+    static let actions: CGFloat = 52
 }
 
 private enum WorkloadColumnWidth {
@@ -7235,8 +8701,56 @@ private enum WorkloadColumnWidth {
     static let mode: CGFloat = 80
     static let age: CGFloat = 70
     static let status: CGFloat = 120
-    static let actions: CGFloat = 44
+    static let alerts: CGFloat = 80
+    static let actions: CGFloat = 52
 }
+
+private struct FilterChip: View {
+    let title: String
+    let isSelected: Bool
+    var systemImage: String? = nil
+    var tint: Color = .accentColor
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .imageScale(.small)
+                }
+                Text(title)
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                Capsule()
+                    .fill(backgroundColor)
+            )
+            .overlay(
+                Capsule()
+                    .stroke(borderColor, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? tint : Color.primary)
+        .animation(.easeInOut(duration: 0.15), value: isSelected)
+    }
+
+    private var backgroundColor: Color {
+        if isSelected {
+            return tint.opacity(0.2)
+        }
+        return Color(nsColor: .controlBackgroundColor)
+    }
+
+    private var borderColor: Color {
+        isSelected ? tint.opacity(0.6) : Color.secondary.opacity(0.25)
+    }
+}
+
 
 private enum PodColumnWidth {
     static let name: CGFloat = 260
@@ -7244,8 +8758,100 @@ private enum PodColumnWidth {
     static let restarts: CGFloat = 80
     static let node: CGFloat = 180
     static let status: CGFloat = 120
+    static let alerts: CGFloat = 80
     static let age: CGFloat = 80
     static let actions: CGFloat = 52
+}
+
+private struct EventTimelineView: View {
+    let events: [EventSummary]
+
+    private static let formatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    private var orderedEvents: [EventSummary] {
+        events.sorted { eventDate($0) > eventDate($1) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(orderedEvents.enumerated()), id: \.element.id) { index, event in
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(spacing: 0) {
+                        Circle()
+                            .fill(color(for: event))
+                            .frame(width: 8, height: 8)
+                        if index < orderedEvents.count - 1 {
+                            Rectangle()
+                                .fill(Color.secondary.opacity(0.3))
+                                .frame(width: 2, height: 18)
+                                .padding(.top, 2)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Label(event.type.rawValue.capitalized, systemImage: icon(for: event))
+                                .labelStyle(.titleAndIcon)
+                                .font(.caption.bold())
+                                .foregroundStyle(color(for: event))
+                            if event.count > 1 {
+                                Text("×\(event.count)")
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(relativeTime(for: event))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(event.message)
+                            .font(.caption)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(3)
+                    }
+                }
+            }
+        }
+    }
+
+    private func eventDate(_ event: EventSummary) -> Date {
+        if let timestamp = event.timestamp {
+            return timestamp
+        }
+        let now = Date()
+        switch event.age {
+        case .minutes(let value):
+            return now.addingTimeInterval(Double(-value * 60))
+        case .hours(let value):
+            return now.addingTimeInterval(Double(-value * 3600))
+        case .days(let value):
+            return now.addingTimeInterval(Double(-value * 86400))
+        }
+    }
+
+    private func relativeTime(for event: EventSummary) -> String {
+        EventTimelineView.formatter.localizedString(for: eventDate(event), relativeTo: Date())
+    }
+
+    private func color(for event: EventSummary) -> Color {
+        switch event.type {
+        case .error: return .red
+        case .warning: return .orange
+        case .normal: return .blue
+        }
+    }
+
+    private func icon(for event: EventSummary) -> String {
+        switch event.type {
+        case .error: return "exclamationmark.octagon.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .normal: return "info.circle.fill"
+        }
+    }
 }
 
 private struct NavigationSidebar: View {
@@ -7413,8 +9019,8 @@ private struct ConfigResourceGroupView: View {
                     }
                     .buttonStyle(.borderless)
                     .help(kind == .secret
-                        ? (resource.permissions.canReveal ? "View and edit secret" : "View secret metadata (plaintext restricted by RBAC)")
-                        : (resource.permissions.canEdit ? "View and edit config map" : "View config map data (editing restricted by RBAC)"))
+                        ? (resource.permissions.canReveal ? "View secret data" : (resource.permissions.revealReason ?? "View secret metadata (plaintext restricted by RBAC)."))
+                        : (resource.permissions.canEdit ? "View and edit config map" : (resource.permissions.editReason ?? "Editing restricted by RBAC.")))
                 }
             )
         }
@@ -7735,6 +9341,7 @@ private struct ApplicationsSection: View {
 private struct NodesSection: View {
     let cluster: Cluster
     @Binding var sortOption: NodeSortOption
+    var filterState: NodeFilterState
     let isNodeBusy: (NodeInfo) -> Bool
     let nodeActionError: (NodeInfo) -> NodeActionFeedback?
     let onShowDetails: (NodeInfo) -> Void
@@ -7746,8 +9353,11 @@ private struct NodesSection: View {
 
     private var isConnected: Bool { cluster.isConnected }
     private var nodes: [NodeInfo] { cluster.nodes }
+    private var filteredNodes: [NodeInfo] {
+        cluster.nodes.filter { filterState.matches($0) }
+    }
     private var sortedNodes: [NodeInfo] {
-        cluster.nodes.sorted(by: compareNodes)
+        filteredNodes.sorted(by: compareNodes)
     }
 
     var body: some View {
@@ -7770,6 +9380,12 @@ private struct NodesSection: View {
                 "No Nodes",
                 systemImage: "cpu",
                 description: Text("Nodes will appear here once the cluster finishes loading.")
+            )
+        } else if filteredNodes.isEmpty {
+            ContentUnavailableView(
+                "No Matching Nodes",
+                systemImage: "line.3.horizontal.decrease.circle",
+                description: Text("Adjust filters to see node results.")
             )
         } else {
             VStack(alignment: .leading, spacing: 16) {

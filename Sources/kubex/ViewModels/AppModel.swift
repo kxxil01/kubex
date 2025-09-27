@@ -26,6 +26,33 @@ final class AppModel: ObservableObject {
     @Published private(set) var helmErrors: [String: String] = [:]
     @Published private(set) var inspectorSelection: InspectorSelection = .none
     @Published private(set) var clusterOverviewMetrics: [Cluster.ID: ClusterOverviewMetrics] = [:]
+    @Published var workloadSortOption: WorkloadSortOption = .default {
+        didSet { persistSortPreferencesIfNeeded() }
+    }
+    @Published var nodeSortOption: NodeSortOption = .default {
+        didSet { persistSortPreferencesIfNeeded() }
+    }
+    @Published var workloadFilterState: WorkloadFilterState = .empty {
+        didSet { persistFilterPreferencesIfNeeded() }
+    }
+    @Published var podFilterState: PodFilterState = .empty {
+        didSet { persistFilterPreferencesIfNeeded() }
+    }
+    @Published var nodeFilterState: NodeFilterState = .empty {
+        didSet { persistFilterPreferencesIfNeeded() }
+    }
+    @Published var configFilterState: ConfigFilterState = .empty {
+        didSet { persistFilterPreferencesIfNeeded() }
+    }
+    @Published var isQuickSearchPresented: Bool = false
+    @Published var quickSearchQuery: String = "" {
+        didSet { refreshQuickSearchResults() }
+    }
+    @Published var quickSearchNamespaceFilter: Namespace.ID? = AppModel.allNamespacesNamespaceID {
+        didSet { refreshQuickSearchResults() }
+    }
+    @Published private(set) var quickSearchResults: [QuickSearchResult] = []
+    @Published private(set) var quickSearchFocus: QuickSearchSelection?
 
     private var kubeconfigEnvValue: String? {
         AppModel.joinedKubeconfigPath(for: kubeconfigSources)
@@ -56,6 +83,62 @@ final class AppModel: ObservableObject {
         case service(clusterID: Cluster.ID, namespaceID: Namespace.ID, serviceID: ServiceSummary.ID)
         case ingress(clusterID: Cluster.ID, namespaceID: Namespace.ID, ingressID: IngressSummary.ID)
         case persistentVolumeClaim(clusterID: Cluster.ID, namespaceID: Namespace.ID, claimID: PersistentVolumeClaimSummary.ID)
+    }
+
+    enum QuickSearchTarget: Equatable, Hashable {
+        case tab(ClusterDetailView.Tab)
+        case namespace(Namespace.ID)
+        case workload(kind: WorkloadKind, namespaceID: Namespace.ID, workloadID: WorkloadSummary.ID)
+        case pod(namespaceID: Namespace.ID, podID: PodSummary.ID)
+        case node(nodeID: NodeInfo.ID)
+        case helm(releaseID: HelmRelease.ID)
+        case service(namespaceID: Namespace.ID, serviceID: ServiceSummary.ID)
+        case ingress(namespaceID: Namespace.ID, ingressID: IngressSummary.ID)
+        case persistentVolumeClaim(namespaceID: Namespace.ID, claimID: PersistentVolumeClaimSummary.ID)
+        case configResource(kind: ConfigResourceKind, namespaceID: Namespace.ID, resourceID: ConfigResourceSummary.ID)
+    }
+
+    struct QuickSearchResult: Identifiable, Hashable {
+        let id: UUID
+        let clusterID: Cluster.ID
+        let title: String
+        let subtitle: String?
+        let detail: String?
+        let category: String
+        let iconSystemName: String
+        let target: QuickSearchTarget
+
+        init(
+            id: UUID = UUID(),
+            clusterID: Cluster.ID,
+            title: String,
+            subtitle: String? = nil,
+            detail: String? = nil,
+            category: String,
+            iconSystemName: String,
+            target: QuickSearchTarget
+        ) {
+            self.id = id
+            self.clusterID = clusterID
+            self.title = title
+            self.subtitle = subtitle
+            self.detail = detail
+            self.category = category
+            self.iconSystemName = iconSystemName
+            self.target = target
+        }
+    }
+
+    struct QuickSearchSelection: Identifiable, Equatable {
+        let id: UUID
+        let clusterID: Cluster.ID
+        let target: QuickSearchTarget
+
+        init(clusterID: Cluster.ID, target: QuickSearchTarget) {
+            self.id = UUID()
+            self.clusterID = clusterID
+            self.target = target
+        }
     }
 
     private struct ClusterMetricHistory {
@@ -109,6 +192,12 @@ final class AppModel: ObservableObject {
         static let selectedTab = "kubex.selected_tab"
         static let kubeconfigSources = "kubex.kubeconfig_sources"
         static let kubeconfigPath = "kubex.kubeconfig_path"
+        static let workloadSort = "kubex.sort.workloads"
+        static let nodeSort = "kubex.sort.nodes"
+        static let workloadFilter = "kubex.filter.workloads"
+        static let podFilter = "kubex.filter.pods"
+        static let nodeFilter = "kubex.filter.nodes"
+        static let configFilter = "kubex.filter.config"
     }
 
     private static func normalizePath(_ path: String?) -> String? {
@@ -181,6 +270,9 @@ final class AppModel: ObservableObject {
             self.selectedResourceTab = tab
             self.pendingPreferredTab = tab
         }
+
+        loadSortPreferences(from: defaults)
+        loadFilterPreferences(from: defaults)
     }
 
     func setInspectorSelection(_ selection: InspectorSelection) {
@@ -222,6 +314,9 @@ final class AppModel: ObservableObject {
 
             let clusters = try await clusterService.loadClusters()
             self.clusters = clusters
+            if isQuickSearchPresented {
+                refreshQuickSearchResults()
+            }
             let newClusterIDs = Set(clusters.map { $0.id })
             let obsoleteMetricKeys = clusterOverviewMetrics.keys.filter { !newClusterIDs.contains($0) }
             for key in obsoleteMetricKeys {
@@ -344,6 +439,464 @@ final class AppModel: ObservableObject {
         }
 
         return aggregated
+    }
+
+    // MARK: - Quick Search
+
+    func presentQuickSearch() {
+        guard let cluster = selectedCluster, cluster.isConnected else { return }
+        quickSearchQuery = ""
+        if let namespaceID = selectedNamespaceID {
+            quickSearchNamespaceFilter = namespaceID
+        } else {
+            quickSearchNamespaceFilter = AppModel.allNamespacesNamespaceID
+        }
+        isQuickSearchPresented = true
+        refreshQuickSearchResults()
+    }
+
+    func dismissQuickSearch() {
+        isQuickSearchPresented = false
+        quickSearchQuery = ""
+        quickSearchResults = []
+        quickSearchFocus = nil
+    }
+
+    func handleQuickSearchSelection(_ result: QuickSearchResult) {
+        guard let cluster = clusters.first(where: { $0.id == result.clusterID }) else { return }
+
+        if selectedClusterID != cluster.id {
+            selectedClusterID = cluster.id
+        }
+
+        isQuickSearchPresented = false
+        quickSearchResults = []
+        quickSearchQuery = ""
+
+        switch result.target {
+        case let .tab(tab):
+            selectedResourceTab = tab
+            clearInspectorSelection()
+
+        case let .namespace(namespaceID):
+            selectedNamespaceID = namespaceID
+            selectedResourceTab = .namespaces
+            clearInspectorSelection()
+
+        case let .workload(kind, namespaceID, workloadID):
+            selectedNamespaceID = namespaceID
+            selectedResourceTab = workloadTab(for: kind)
+            setInspectorSelection(
+                .workload(
+                    clusterID: cluster.id,
+                    namespaceID: namespaceID,
+                    workloadID: workloadID
+                )
+            )
+
+        case let .pod(namespaceID, podID):
+            selectedNamespaceID = namespaceID
+            selectedResourceTab = .workloadsPods
+            setInspectorSelection(
+                .pod(
+                    clusterID: cluster.id,
+                    namespaceID: namespaceID,
+                    podID: podID
+                )
+            )
+
+        case .node:
+            selectedResourceTab = .nodes
+            clearInspectorSelection()
+            quickSearchFocus = QuickSearchSelection(clusterID: cluster.id, target: result.target)
+            return
+
+        case let .helm(releaseID):
+            selectedResourceTab = .helm
+            setInspectorSelection(.helm(clusterID: cluster.id, releaseID: releaseID))
+
+        case let .service(namespaceID, serviceID):
+            selectedNamespaceID = namespaceID
+            selectedResourceTab = .network
+            setInspectorSelection(
+                .service(
+                    clusterID: cluster.id,
+                    namespaceID: namespaceID,
+                    serviceID: serviceID
+                )
+            )
+
+        case let .ingress(namespaceID, ingressID):
+            selectedNamespaceID = namespaceID
+            selectedResourceTab = .network
+            setInspectorSelection(
+                .ingress(
+                    clusterID: cluster.id,
+                    namespaceID: namespaceID,
+                    ingressID: ingressID
+                )
+            )
+
+        case let .persistentVolumeClaim(namespaceID, claimID):
+            selectedNamespaceID = namespaceID
+            selectedResourceTab = .storage
+            setInspectorSelection(
+                .persistentVolumeClaim(
+                    clusterID: cluster.id,
+                    namespaceID: namespaceID,
+                    claimID: claimID
+                )
+            )
+
+        case let .configResource(_, namespaceID, _):
+            selectedNamespaceID = namespaceID
+            selectedResourceTab = .config
+            clearInspectorSelection()
+        }
+
+        quickSearchFocus = QuickSearchSelection(clusterID: cluster.id, target: result.target)
+    }
+
+    func consumeQuickSearchFocus() {
+        quickSearchFocus = nil
+    }
+
+    private func refreshQuickSearchResults() {
+        guard isQuickSearchPresented else {
+            quickSearchResults = []
+            return
+        }
+
+        guard let cluster = selectedCluster, cluster.isConnected else {
+            quickSearchResults = []
+            return
+        }
+
+        let trimmed = quickSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            quickSearchResults = []
+            return
+        }
+
+        let tokens = trimmed.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !tokens.isEmpty else {
+            quickSearchResults = []
+            return
+        }
+
+        let maxCandidates = 200
+        var matches: [(score: Int, result: QuickSearchResult)] = []
+        let filterID = quickSearchNamespaceFilter
+        let clusterName = cluster.name
+        let namespaceLookup = Dictionary(uniqueKeysWithValues: cluster.namespaces.map { ($0.name, $0.id) })
+
+        func filterAllows(namespaceName: String) -> Bool {
+            guard let filterID else { return true }
+            if filterID == AppModel.allNamespacesNamespaceID { return true }
+            guard let actualID = namespaceLookup[namespaceName] else { return false }
+            return actualID == filterID
+        }
+
+        func addResult(
+            title: String,
+            subtitle: String?,
+            detail: String?,
+            category: String,
+            icon: String,
+            target: QuickSearchTarget,
+            secondary: [String] = []
+        ) {
+            var fields = secondary
+            if let subtitle { fields.append(subtitle) }
+            if let detail { fields.append(detail) }
+            fields.append(category)
+            fields.append(clusterName)
+            guard let score = matchScore(for: tokens, primary: title, secondary: fields) else { return }
+            let result = QuickSearchResult(
+                clusterID: cluster.id,
+                title: title,
+                subtitle: subtitle,
+                detail: detail,
+                category: category,
+                iconSystemName: icon,
+                target: target
+            )
+            matches.append((score, result))
+        }
+
+        if filterID == nil || filterID == AppModel.allNamespacesNamespaceID {
+            addResult(
+                title: AppModel.allNamespacesDisplayName,
+                subtitle: clusterName,
+                detail: nil,
+                category: "Namespace",
+                icon: ClusterDetailView.Tab.namespaces.icon,
+                target: .namespace(AppModel.allNamespacesNamespaceID)
+            )
+        }
+
+        for namespace in cluster.namespaces {
+            if matches.count >= maxCandidates { break }
+            if !matchesNamespaceFilter(namespaceID: namespace.id, filterID: filterID) {
+                continue
+            }
+
+            var namespaceDetails: [String] = []
+            if !namespace.workloads.isEmpty {
+                namespaceDetails.append("\(namespace.workloads.count) workloads")
+            }
+            if !namespace.pods.isEmpty {
+                namespaceDetails.append("\(namespace.pods.count) pods")
+            }
+
+            addResult(
+                title: namespace.name,
+                subtitle: clusterName,
+                detail: namespaceDetails.isEmpty ? nil : namespaceDetails.joined(separator: " · "),
+                category: "Namespace",
+                icon: ClusterDetailView.Tab.namespaces.icon,
+                target: .namespace(namespace.id),
+                secondary: [namespace.name]
+            )
+
+            for workload in namespace.workloads {
+                if matches.count >= maxCandidates { break }
+                let detailParts: [String] = [
+                    "Ready \(workload.readyDisplay)",
+                    workload.status.displayName
+                ]
+                addResult(
+                    title: workload.name,
+                    subtitle: "\(namespace.name) • \(workload.kind.displayName)",
+                    detail: detailParts.joined(separator: " · "),
+                    category: workload.kind.displayName,
+                    icon: workload.kind.systemImage,
+                    target: .workload(kind: workload.kind, namespaceID: namespace.id, workloadID: workload.id),
+                    secondary: [namespace.name, workload.status.displayName]
+                )
+            }
+
+            for pod in namespace.pods {
+                if matches.count >= maxCandidates { break }
+                var podDetails: [String] = [pod.phase.displayName]
+                if pod.restarts > 0 {
+                    podDetails.append("\(pod.restarts) restarts")
+                }
+                if let nodeName = pod.nodeName.split(separator: ".").first {
+                    podDetails.append(String(nodeName))
+                }
+                addResult(
+                    title: pod.name,
+                    subtitle: "\(namespace.name) • Pod",
+                    detail: podDetails.joined(separator: " · "),
+                    category: "Pod",
+                    icon: ClusterDetailView.Tab.workloadsPods.icon,
+                    target: .pod(namespaceID: namespace.id, podID: pod.id),
+                    secondary: [namespace.name, pod.phase.displayName]
+                )
+            }
+
+            for service in namespace.services {
+                if matches.count >= maxCandidates { break }
+                var serviceDetails: [String] = []
+                if !service.type.isEmpty {
+                    serviceDetails.append(service.type)
+                }
+                if !service.clusterIP.isEmpty {
+                    serviceDetails.append("ClusterIP \(service.clusterIP)")
+                }
+                if !service.ports.isEmpty {
+                    serviceDetails.append("Ports \(service.ports)")
+                }
+                if service.totalEndpointCount > 0 {
+                    serviceDetails.append("Endpoints \(service.endpointHealthDisplay)")
+                }
+                addResult(
+                    title: service.name,
+                    subtitle: "\(namespace.name) • Service",
+                    detail: serviceDetails.joined(separator: " · "),
+                    category: "Service",
+                    icon: ClusterDetailView.NetworkResourceKind.services.systemImage,
+                    target: .service(namespaceID: namespace.id, serviceID: service.id),
+                    secondary: [namespace.name, service.type]
+                )
+            }
+
+            for ingress in namespace.ingresses {
+                if matches.count >= maxCandidates { break }
+                let ingressDetails = ingress.serviceTargets.isEmpty ? ingress.hostRules : ingress.serviceTargets
+                addResult(
+                    title: ingress.name,
+                    subtitle: "\(namespace.name) • Ingress",
+                    detail: ingressDetails,
+                    category: "Ingress",
+                    icon: ClusterDetailView.NetworkResourceKind.ingresses.systemImage,
+                    target: .ingress(namespaceID: namespace.id, ingressID: ingress.id),
+                    secondary: [namespace.name, ingress.hostRules]
+                )
+            }
+
+            for claim in namespace.persistentVolumeClaims {
+                if matches.count >= maxCandidates { break }
+                var claimDetails: [String] = [claim.status]
+                if let capacity = claim.capacity {
+                    claimDetails.append(capacity)
+                }
+                if let storageClass = claim.storageClass {
+                    claimDetails.append(storageClass)
+                }
+                addResult(
+                    title: claim.name,
+                    subtitle: "\(namespace.name) • PVC",
+                    detail: claimDetails.joined(separator: " · "),
+                    category: "PersistentVolumeClaim",
+                    icon: ClusterDetailView.Tab.storage.icon,
+                    target: .persistentVolumeClaim(namespaceID: namespace.id, claimID: claim.id),
+                    secondary: [namespace.name, claim.status]
+                )
+            }
+
+            for config in namespace.configResources {
+                if matches.count >= maxCandidates { break }
+                let detail = config.summary ?? config.typeDescription
+                addResult(
+                    title: config.name,
+                    subtitle: "\(namespace.name) • \(config.kind.displayName)",
+                    detail: detail,
+                    category: config.kind.displayName,
+                    icon: config.kind.systemImage,
+                    target: .configResource(kind: config.kind, namespaceID: namespace.id, resourceID: config.id),
+                    secondary: [namespace.name, config.kind.displayName]
+                )
+            }
+        }
+
+        if filterID == nil || filterID == AppModel.allNamespacesNamespaceID {
+            for node in cluster.nodes {
+                if matches.count >= maxCandidates { break }
+                var nodeDetails: [String] = []
+                if let cpu = node.cpuUsage {
+                    nodeDetails.append("CPU \(cpu)")
+                }
+                if let memory = node.memoryUsage {
+                    nodeDetails.append("Memory \(memory)")
+                }
+                if node.warningCount > 0 {
+                    nodeDetails.append("\(node.warningCount) warnings")
+                }
+                addResult(
+                    title: node.name,
+                    subtitle: "Node",
+                    detail: nodeDetails.joined(separator: " · "),
+                    category: "Node",
+                    icon: ClusterDetailView.Tab.nodes.icon,
+                    target: .node(nodeID: node.id),
+                    secondary: nodeDetails
+                )
+            }
+        }
+
+        for release in cluster.helmReleases {
+            if matches.count >= maxCandidates { break }
+            if !filterAllows(namespaceName: release.namespace) {
+                continue
+            }
+            var releaseDetails: [String] = [release.status]
+            if !release.chart.isEmpty {
+                releaseDetails.append(release.chart)
+            }
+            if let appVersion = release.appVersion {
+                releaseDetails.append("App \(appVersion)")
+            }
+            addResult(
+                title: release.name,
+                subtitle: "\(release.namespace) • Helm",
+                detail: releaseDetails.joined(separator: " · "),
+                category: "Helm",
+                icon: ClusterDetailView.Tab.helm.icon,
+                target: .helm(releaseID: release.id),
+                secondary: [release.namespace, release.status]
+            )
+        }
+
+        matches.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score < rhs.score }
+            let left = lhs.result
+            let right = rhs.result
+            let titleCompare = left.title.localizedCaseInsensitiveCompare(right.title)
+            if titleCompare != .orderedSame {
+                return titleCompare == .orderedAscending
+            }
+            let leftSubtitle = left.subtitle ?? ""
+            let rightSubtitle = right.subtitle ?? ""
+            let subtitleCompare = leftSubtitle.localizedCaseInsensitiveCompare(rightSubtitle)
+            if subtitleCompare != .orderedSame {
+                return subtitleCompare == .orderedAscending
+            }
+            if left.category != right.category {
+                return left.category.localizedCompare(right.category) == .orderedAscending
+            }
+            if left.clusterID != right.clusterID {
+                return left.clusterID.uuidString < right.clusterID.uuidString
+            }
+            return left.id.uuidString < right.id.uuidString
+        }
+
+        quickSearchResults = matches.prefix(60).map { $0.result }
+    }
+
+    private func matchesNamespaceFilter(namespaceID: Namespace.ID, filterID: Namespace.ID?) -> Bool {
+        guard let filterID else { return true }
+        if filterID == AppModel.allNamespacesNamespaceID {
+            return true
+        }
+        return namespaceID == filterID
+    }
+
+    private func workloadTab(for kind: WorkloadKind) -> ClusterDetailView.Tab {
+        switch kind {
+        case .deployment: return .workloadsDeployments
+        case .statefulSet: return .workloadsStatefulSets
+        case .daemonSet: return .workloadsDaemonSets
+        case .cronJob: return .workloadsCronJobs
+        case .replicaSet: return .workloadsReplicaSets
+        case .replicationController: return .workloadsReplicationControllers
+        case .job: return .workloadsJobs
+        }
+    }
+
+    private func matchScore(for tokens: [String], primary: String, secondary: [String]) -> Int? {
+        let primaryLower = primary.lowercased()
+        let secondaryLower = secondary.map { $0.lowercased() }
+        var total = 0
+
+        for token in tokens {
+            let tokenLower = token
+            var best = Int.max
+
+            if primaryLower.hasPrefix(tokenLower) {
+                best = min(best, 0)
+            }
+            if primaryLower.contains(tokenLower) {
+                best = min(best, 1)
+            }
+
+            for field in secondaryLower {
+                if field.hasPrefix(tokenLower) {
+                    best = min(best, 2)
+                }
+                if field.contains(tokenLower) {
+                    best = min(best, 3)
+                }
+            }
+
+            if best == Int.max {
+                return nil
+            }
+            total += best
+        }
+
+        return total
     }
 
     func namespace(clusterID: Cluster.ID, named name: String) -> Namespace? {
@@ -650,6 +1203,98 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func editServiceResource(cluster: Cluster, namespace: Namespace, service: ServiceSummary) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before editing services.")
+            return
+        }
+
+        let request = ResourceEditRequest(
+            contextName: cluster.contextName,
+            namespace: namespace.name,
+            kind: "service",
+            name: service.name
+        )
+
+        do {
+            try await editService.editResource(request)
+            error = nil
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+        }
+    }
+
+    func deleteServiceResource(cluster: Cluster, namespace: Namespace, service: ServiceSummary) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before deleting services.")
+            return
+        }
+
+        do {
+            try await runKubectl(arguments: [
+                "delete",
+                "service",
+                service.name,
+                "-n",
+                namespace.name,
+                "--context",
+                cluster.contextName
+            ])
+            error = nil
+            await refreshNamespace(clusterID: cluster.id, contextName: cluster.contextName, namespaceName: namespace.name)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+        }
+    }
+
+    func editPersistentVolumeClaim(cluster: Cluster, namespace: Namespace, claim: PersistentVolumeClaimSummary) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before editing persistent volume claims.")
+            return
+        }
+
+        let request = ResourceEditRequest(
+            contextName: cluster.contextName,
+            namespace: namespace.name,
+            kind: "persistentvolumeclaim",
+            name: claim.name
+        )
+
+        do {
+            try await editService.editResource(request)
+            error = nil
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+        }
+    }
+
+    func deletePersistentVolumeClaim(cluster: Cluster, namespace: Namespace, claim: PersistentVolumeClaimSummary) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before deleting persistent volume claims.")
+            return
+        }
+
+        do {
+            try await runKubectl(arguments: [
+                "delete",
+                "pvc",
+                claim.name,
+                "-n",
+                namespace.name,
+                "--context",
+                cluster.contextName
+            ])
+            error = nil
+            await refreshNamespace(clusterID: cluster.id, contextName: cluster.contextName, namespaceName: namespace.name)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+        }
+    }
+
     func openNodeShell(cluster: Cluster, node: NodeInfo) async {
         guard cluster.isConnected else {
             self.error = AppModelError(message: "Connect to the cluster before launching a node shell.")
@@ -872,6 +1517,21 @@ final class AppModel: ObservableObject {
                 message: "Cluster is disconnected.",
                 kubectlOutput: nil,
                 diff: computeConfigMapDiff(original: configMap.configMapEntries, updated: entries)
+            )
+            return
+        }
+
+        guard namespace.permissions.canEditConfigMaps else {
+            let diff = computeConfigMapDiff(original: configMap.configMapEntries, updated: entries)
+            let message = "RBAC forbids editing config maps in namespace \(namespace.name)."
+            self.error = AppModelError(message: message)
+            configMapActionFeedback = ConfigMapActionFeedback(
+                configMapName: configMap.name,
+                namespace: namespace.name,
+                status: .failure,
+                message: message,
+                kubectlOutput: nil,
+                diff: diff
             )
             return
         }
@@ -1178,6 +1838,9 @@ final class AppModel: ObservableObject {
         } else {
             clusters.append(updated)
         }
+        if isQuickSearchPresented {
+            refreshQuickSearchResults()
+        }
     }
 
     private func updateClusterAfterFailedConnection(clusterID: Cluster.ID, message: String) {
@@ -1296,6 +1959,68 @@ final class AppModel: ObservableObject {
         }
 
         defaults.set(selectedResourceTab.preferenceValue, forKey: PreferenceKeys.selectedTab)
+    }
+
+    private func loadSortPreferences(from defaults: UserDefaults) {
+        let decoder = JSONDecoder()
+        if let workloadData = defaults.data(forKey: PreferenceKeys.workloadSort),
+           let option = try? decoder.decode(WorkloadSortOption.self, from: workloadData) {
+            workloadSortOption = option
+        }
+        if let nodeData = defaults.data(forKey: PreferenceKeys.nodeSort),
+           let option = try? decoder.decode(NodeSortOption.self, from: nodeData) {
+            nodeSortOption = option
+        }
+    }
+
+    private func loadFilterPreferences(from defaults: UserDefaults) {
+        let decoder = JSONDecoder()
+        if let workloadData = defaults.data(forKey: PreferenceKeys.workloadFilter),
+           let state = try? decoder.decode(WorkloadFilterState.self, from: workloadData) {
+            workloadFilterState = state
+        }
+        if let podData = defaults.data(forKey: PreferenceKeys.podFilter),
+           let state = try? decoder.decode(PodFilterState.self, from: podData) {
+            podFilterState = state
+        }
+        if let nodeData = defaults.data(forKey: PreferenceKeys.nodeFilter),
+           let state = try? decoder.decode(NodeFilterState.self, from: nodeData) {
+            nodeFilterState = state
+        }
+        if let configData = defaults.data(forKey: PreferenceKeys.configFilter),
+           let state = try? decoder.decode(ConfigFilterState.self, from: configData) {
+            configFilterState = state
+        }
+    }
+
+    private func persistSortPreferencesIfNeeded() {
+        guard !isRestoringPreferences else { return }
+        let encoder = JSONEncoder()
+        let defaults = UserDefaults.standard
+        if let workloadData = try? encoder.encode(workloadSortOption) {
+            defaults.set(workloadData, forKey: PreferenceKeys.workloadSort)
+        }
+        if let nodeData = try? encoder.encode(nodeSortOption) {
+            defaults.set(nodeData, forKey: PreferenceKeys.nodeSort)
+        }
+    }
+
+    private func persistFilterPreferencesIfNeeded() {
+        guard !isRestoringPreferences else { return }
+        let encoder = JSONEncoder()
+        let defaults = UserDefaults.standard
+        if let workloadData = try? encoder.encode(workloadFilterState) {
+            defaults.set(workloadData, forKey: PreferenceKeys.workloadFilter)
+        }
+        if let podData = try? encoder.encode(podFilterState) {
+            defaults.set(podData, forKey: PreferenceKeys.podFilter)
+        }
+        if let nodeData = try? encoder.encode(nodeFilterState) {
+            defaults.set(nodeData, forKey: PreferenceKeys.nodeFilter)
+        }
+        if let configData = try? encoder.encode(configFilterState) {
+            defaults.set(configData, forKey: PreferenceKeys.configFilter)
+        }
     }
 
     private func persistKubeconfigSources(_ paths: [String]) {

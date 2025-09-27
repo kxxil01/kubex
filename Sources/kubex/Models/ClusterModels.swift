@@ -55,6 +55,7 @@ struct NodeInfo: Identifiable, Hashable {
     var kubeletVersion: String
     var age: EventAge?
     var conditions: [NodeCondition]
+    var labels: [String: String] = [:]
 
     var taintSummary: String {
         taints.isEmpty ? "—" : taints.joined(separator: "\n")
@@ -180,6 +181,7 @@ struct Namespace: Identifiable, Hashable {
     var roles: [RoleSummary] = []
     var roleBindings: [RoleBindingSummary] = []
     var isLoaded: Bool
+    var permissions: NamespacePermissions = NamespacePermissions()
 
     var alertCount: Int { alerts.count }
 
@@ -244,13 +246,25 @@ struct ConfigResourceSummary: Identifiable, Hashable {
     var secretEntries: [SecretDataEntry]? = nil
     var configMapEntries: [ConfigMapEntry]? = nil
     var permissions: ConfigResourcePermissions = .fullAccess
+    var labels: [String: String] = [:]
 }
 
-struct ConfigResourcePermissions: Hashable {
+struct ConfigResourcePermissions: Hashable, Codable {
     var canReveal: Bool
     var canEdit: Bool
+    var canDelete: Bool
+    var revealReason: String?
+    var editReason: String?
+    var deleteReason: String?
 
-    static let fullAccess = ConfigResourcePermissions(canReveal: true, canEdit: true)
+    static let fullAccess = ConfigResourcePermissions(
+        canReveal: true,
+        canEdit: true,
+        canDelete: true,
+        revealReason: nil,
+        editReason: nil,
+        deleteReason: nil
+    )
 }
 
 struct SecretDataEntry: Identifiable, Hashable {
@@ -450,6 +464,131 @@ struct ConfigMapDiffSummary: Identifiable, Hashable {
     }
 }
 
+struct PermissionGate: Hashable, Codable {
+    var isAllowed: Bool
+    var reason: String?
+
+    static let allowed = PermissionGate(isAllowed: true, reason: nil)
+}
+
+enum NamespacePermissionAction: String, Codable, Hashable {
+    case getPods
+    case viewPodLogs
+    case execPods
+    case deletePods
+    case portForwardPods
+    case editConfigMaps
+    case revealSecrets
+    case editSecrets
+    case deleteSecrets
+    case getServices
+    case editServices
+    case deleteServices
+    case getPersistentVolumeClaims
+    case editPersistentVolumeClaims
+    case deletePersistentVolumeClaims
+}
+
+struct NamespacePermissions: Hashable, Codable {
+    private var getPodsGate: PermissionGate = .allowed
+    private var viewPodLogsGate: PermissionGate = .allowed
+    private var execPodsGate: PermissionGate = .allowed
+    private var deletePodsGate: PermissionGate = .allowed
+    private var portForwardPodsGate: PermissionGate = .allowed
+    private var editConfigMapsGate: PermissionGate = .allowed
+    private var revealSecretsGate: PermissionGate = .allowed
+    private var editSecretsGate: PermissionGate = .allowed
+    private var deleteSecretsGate: PermissionGate = .allowed
+    private var getServicesGate: PermissionGate = .allowed
+    private var editServicesGate: PermissionGate = .allowed
+    private var deleteServicesGate: PermissionGate = .allowed
+    private var getPersistentVolumeClaimsGate: PermissionGate = .allowed
+    private var editPersistentVolumeClaimsGate: PermissionGate = .allowed
+    private var deletePersistentVolumeClaimsGate: PermissionGate = .allowed
+
+    var canGetPods: Bool { getPodsGate.isAllowed }
+    var canViewPodLogs: Bool { viewPodLogsGate.isAllowed }
+    var canExecPods: Bool { execPodsGate.isAllowed }
+    var canDeletePods: Bool { deletePodsGate.isAllowed }
+    var canPortForwardPods: Bool { portForwardPodsGate.isAllowed }
+    var canEditConfigMaps: Bool { editConfigMapsGate.isAllowed }
+    var canRevealSecrets: Bool { revealSecretsGate.isAllowed }
+    var canEditSecrets: Bool { editSecretsGate.isAllowed }
+    var canDeleteSecrets: Bool { deleteSecretsGate.isAllowed }
+    var canGetServices: Bool { getServicesGate.isAllowed }
+    var canEditServices: Bool { editServicesGate.isAllowed }
+    var canDeleteServices: Bool { deleteServicesGate.isAllowed }
+    var canGetPersistentVolumeClaims: Bool { getPersistentVolumeClaimsGate.isAllowed }
+    var canEditPersistentVolumeClaims: Bool { editPersistentVolumeClaimsGate.isAllowed }
+    var canDeletePersistentVolumeClaims: Bool { deletePersistentVolumeClaimsGate.isAllowed }
+
+    mutating func apply(_ gate: PermissionGate, to action: NamespacePermissionAction) {
+        let sanitizedGate = gate.isAllowed ? PermissionGate.allowed : PermissionGate(isAllowed: false, reason: gate.reason)
+        switch action {
+        case .getPods: getPodsGate = sanitizedGate
+        case .viewPodLogs: viewPodLogsGate = sanitizedGate
+        case .execPods: execPodsGate = sanitizedGate
+        case .deletePods: deletePodsGate = sanitizedGate
+        case .portForwardPods: portForwardPodsGate = sanitizedGate
+        case .editConfigMaps: editConfigMapsGate = sanitizedGate
+        case .revealSecrets: revealSecretsGate = sanitizedGate
+        case .editSecrets: editSecretsGate = sanitizedGate
+        case .deleteSecrets: deleteSecretsGate = sanitizedGate
+        case .getServices: getServicesGate = sanitizedGate
+        case .editServices: editServicesGate = sanitizedGate
+        case .deleteServices: deleteServicesGate = sanitizedGate
+        case .getPersistentVolumeClaims: getPersistentVolumeClaimsGate = sanitizedGate
+        case .editPersistentVolumeClaims: editPersistentVolumeClaimsGate = sanitizedGate
+        case .deletePersistentVolumeClaims: deletePersistentVolumeClaimsGate = sanitizedGate
+        }
+    }
+
+    func allows(_ action: NamespacePermissionAction) -> Bool {
+        switch action {
+        case .getPods: return canGetPods
+        case .viewPodLogs: return canViewPodLogs
+        case .execPods: return canExecPods
+        case .deletePods: return canDeletePods
+        case .portForwardPods: return canPortForwardPods
+        case .editConfigMaps: return canEditConfigMaps
+        case .revealSecrets: return canRevealSecrets
+        case .editSecrets: return canEditSecrets
+        case .deleteSecrets: return canDeleteSecrets
+        case .getServices: return canGetServices
+        case .editServices: return canEditServices
+        case .deleteServices: return canDeleteServices
+        case .getPersistentVolumeClaims: return canGetPersistentVolumeClaims
+        case .editPersistentVolumeClaims: return canEditPersistentVolumeClaims
+        case .deletePersistentVolumeClaims: return canDeletePersistentVolumeClaims
+        }
+    }
+
+    func reason(for action: NamespacePermissionAction) -> String? {
+        switch action {
+        case .getPods: return gateReason(getPodsGate)
+        case .viewPodLogs: return gateReason(viewPodLogsGate)
+        case .execPods: return gateReason(execPodsGate)
+        case .deletePods: return gateReason(deletePodsGate)
+        case .portForwardPods: return gateReason(portForwardPodsGate)
+        case .editConfigMaps: return gateReason(editConfigMapsGate)
+        case .revealSecrets: return gateReason(revealSecretsGate)
+        case .editSecrets: return gateReason(editSecretsGate)
+        case .deleteSecrets: return gateReason(deleteSecretsGate)
+        case .getServices: return gateReason(getServicesGate)
+        case .editServices: return gateReason(editServicesGate)
+        case .deleteServices: return gateReason(deleteServicesGate)
+        case .getPersistentVolumeClaims: return gateReason(getPersistentVolumeClaimsGate)
+        case .editPersistentVolumeClaims: return gateReason(editPersistentVolumeClaimsGate)
+        case .deletePersistentVolumeClaims: return gateReason(deletePersistentVolumeClaimsGate)
+        }
+    }
+
+    private func gateReason(_ gate: PermissionGate) -> String? {
+        guard !gate.isAllowed else { return nil }
+        return gate.reason
+    }
+}
+
 struct SecretDiffSummary: Identifiable, Hashable {
     enum ChangeKind: String, Hashable {
         case added
@@ -550,6 +689,20 @@ struct CustomResourceDefinitionSummary: Identifiable, Hashable {
     var age: EventAge?
 }
 
+enum ServiceHealthState: String, Hashable {
+    case healthy
+    case warning
+    case failing
+
+    var tint: Color {
+        switch self {
+        case .healthy: return Color.green
+        case .warning: return Color.orange
+        case .failing: return Color.red
+        }
+    }
+}
+
 struct ServiceSummary: Identifiable, Hashable {
     let id = UUID()
     var name: String
@@ -560,8 +713,37 @@ struct ServiceSummary: Identifiable, Hashable {
     var selector: [String: String] = [:]
     var targetPods: [String] = []
     var endpointCount: Int = 0
+    var readyEndpointCount: Int = 0
+    var notReadyEndpointCount: Int = 0
+    var readyPods: [String] = []
+    var notReadyPods: [String] = []
     var latencyP50: TimeInterval?
     var latencyP95: TimeInterval?
+
+    var totalEndpointCount: Int { readyEndpointCount + notReadyEndpointCount }
+
+    var endpointHealthDisplay: String {
+        let total = totalEndpointCount
+        guard total > 0 else { return "0/0" }
+        return "\(readyEndpointCount)/\(total)"
+    }
+
+    var healthState: ServiceHealthState {
+        let total = totalEndpointCount
+        guard total > 0 else { return .warning }
+        let ratio = Double(readyEndpointCount) / Double(total)
+        if ratio >= 0.9 { return .healthy }
+        if ratio >= 0.6 { return .warning }
+        return .failing
+    }
+}
+
+struct IngressRouteSummary: Identifiable, Hashable {
+    let id = UUID()
+    var host: String
+    var path: String
+    var service: String
+    var port: String?
 }
 
 struct IngressSummary: Identifiable, Hashable {
@@ -572,6 +754,7 @@ struct IngressSummary: Identifiable, Hashable {
     var serviceTargets: String
     var tls: Bool
     var age: EventAge?
+    var routes: [IngressRouteSummary] = []
 }
 
 struct PersistentVolumeClaimSummary: Identifiable, Hashable {
@@ -621,6 +804,7 @@ struct WorkloadSummary: Identifiable, Hashable {
     var failedCount: Int? = nil
     var schedule: String? = nil
     var isSuspended: Bool? = nil
+    var labels: [String: String] = [:]
 
     var desiredDisplay: String {
         NumberFormatter.workloadNumber.string(from: NSNumber(value: replicas)) ?? "\(replicas)"
@@ -762,6 +946,7 @@ struct PodSummary: Identifiable, Hashable {
     var cpuUsageRatio: Double?
     var memoryUsageRatio: Double?
     var diskUsageRatio: Double?
+    var labels: [String: String] = [:]
 
     var primaryContainer: String? { containerNames.first }
     var containerSummary: String { containerNames.joined(separator: ", ") }

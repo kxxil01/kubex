@@ -22,6 +22,15 @@ struct ContentView: View {
             await model.refreshClusters()
         }
         .animation(.easeInOut(duration: 0.2), value: model.banner?.id)
+        .overlay {
+            if model.isQuickSearchPresented {
+                QuickSearchOverlay()
+                    .environmentObject(model)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(2)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: model.isQuickSearchPresented)
         .alert(item: $model.error) { error in
             Alert(
                 title: Text("Unable to Refresh"),
@@ -135,6 +144,22 @@ private struct BannerView: View {
                 .stroke(message.style.tint.opacity(0.3), lineWidth: 1)
         )
         .padding(.bottom, 4)
+    }
+}
+
+private struct QuickSearchOverlay: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .onTapGesture { model.dismissQuickSearch() }
+
+            QuickSearchView()
+                .environmentObject(model)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

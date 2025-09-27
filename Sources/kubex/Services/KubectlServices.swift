@@ -833,6 +833,18 @@ final class KubectlClusterService: ClusterService {
 
     private var secretPermissionCache: [SecretPermissionCacheKey: SecretPermissionCacheEntry] = [:]
     private let secretPermissionCacheTTL: TimeInterval = 60
+    private struct NamespacePermissionCacheKey: Hashable {
+        let context: String
+        let namespace: String
+    }
+
+    private struct NamespacePermissionCacheEntry {
+        var timestamp: Date
+        var permissions: NamespacePermissions
+    }
+
+    private var namespacePermissionCache: [NamespacePermissionCacheKey: NamespacePermissionCacheEntry] = [:]
+    private let namespacePermissionCacheTTL: TimeInterval = 60
     private struct PodMetrics {
         let cpuCores: Double?
         let memoryBytes: Double?
@@ -960,10 +972,12 @@ final class KubectlClusterService: ClusterService {
         async let serviceAccountsTask = fetchServiceAccounts(contextName: contextName, namespace: namespace)
         async let rolesTask = fetchRoles(contextName: contextName, namespace: namespace)
         async let roleBindingsTask = fetchRoleBindings(contextName: contextName, namespace: namespace)
+        async let permissionsTask = fetchNamespacePermissions(contextName: contextName, namespace: namespace)
+
         let workloads = try await workloadsTask
         let pods = try await podsTask
         let events = try await eventsTask
-        let configResources = try await configResourcesTask
+        var configResources = try await configResourcesTask
         var services = await servicesTask
         services = enrichServices(services, pods: pods, events: events)
         let ingresses = await ingressesTask
@@ -971,6 +985,19 @@ final class KubectlClusterService: ClusterService {
         let serviceAccounts = await serviceAccountsTask
         let roles = await rolesTask
         let roleBindings = await roleBindingsTask
+        let permissions = await permissionsTask
+
+        configResources = configResources.map { resource in
+            var updated = resource
+            if updated.kind == .configMap {
+                var perms = updated.permissions
+                perms.canEdit = permissions.canEditConfigMaps
+                perms.editReason = permissions.reason(for: .editConfigMaps)
+                updated.permissions = perms
+            }
+            return updated
+        }
+
         return Namespace(
             id: UUID(),
             name: namespace,
@@ -985,7 +1012,8 @@ final class KubectlClusterService: ClusterService {
             serviceAccounts: serviceAccounts,
             roles: roles,
             roleBindings: roleBindings,
-            isLoaded: true
+            isLoaded: true,
+            permissions: permissions
         )
     }
 
@@ -1137,7 +1165,8 @@ final class KubectlClusterService: ClusterService {
                 status: WorkloadStatus.fromReady(total: desired, ready: ready),
                 updatedReplicas: item.status?.updatedReplicas,
                 availableReplicas: item.status?.availableReplicas,
-                age: creationDate.map(EventAge.from)
+                age: creationDate.map(EventAge.from),
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1158,7 +1187,8 @@ final class KubectlClusterService: ClusterService {
                 status: WorkloadStatus.fromReady(total: desired, ready: ready),
                 updatedReplicas: item.status?.updatedReplicas,
                 availableReplicas: item.status?.availableReplicas,
-                age: creationDate.map(EventAge.from)
+                age: creationDate.map(EventAge.from),
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1179,7 +1209,8 @@ final class KubectlClusterService: ClusterService {
                 status: WorkloadStatus.fromReady(total: desired, ready: ready),
                 updatedReplicas: item.status?.updatedNumberScheduled,
                 availableReplicas: item.status?.numberAvailable,
-                age: creationDate.map(EventAge.from)
+                age: creationDate.map(EventAge.from),
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1199,7 +1230,8 @@ final class KubectlClusterService: ClusterService {
                 status: suspended ? .degraded : .healthy,
                 age: creationDate.map(EventAge.from),
                 schedule: item.spec?.schedule,
-                isSuspended: item.spec?.suspend
+                isSuspended: item.spec?.suspend,
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1220,7 +1252,8 @@ final class KubectlClusterService: ClusterService {
                 status: WorkloadStatus.fromReady(total: desired, ready: ready),
                 updatedReplicas: item.status?.fullyLabeledReplicas,
                 availableReplicas: item.status?.availableReplicas,
-                age: creationDate.map(EventAge.from)
+                age: creationDate.map(EventAge.from),
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1240,7 +1273,8 @@ final class KubectlClusterService: ClusterService {
                 readyReplicas: ready,
                 status: WorkloadStatus.fromReady(total: desired, ready: ready),
                 availableReplicas: item.status?.availableReplicas,
-                age: creationDate.map(EventAge.from)
+                age: creationDate.map(EventAge.from),
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1275,7 +1309,8 @@ final class KubectlClusterService: ClusterService {
                 age: creationDate.map(EventAge.from),
                 activeCount: active,
                 succeededCount: succeeded,
-                failedCount: failed
+                failedCount: failed,
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1296,7 +1331,8 @@ final class KubectlClusterService: ClusterService {
                     return protocolString.isEmpty ? portNum : "\(portNum)/\(protocolString)"
                 }.joined(separator: ", ")
                 let clusterIP = item.spec.clusterIP ?? "—"
-                let targetPods = endpointMap[item.metadata.name] ?? []
+                let endpointStatus = endpointMap[item.metadata.name] ?? ServiceEndpointStatus(ready: [], notReady: [])
+                let combinedTargets = Array(Set(endpointStatus.ready + endpointStatus.notReady)).sorted()
                 var summary = ServiceSummary(
                     name: item.metadata.name,
                     type: item.spec.type ?? "ClusterIP",
@@ -1304,9 +1340,13 @@ final class KubectlClusterService: ClusterService {
                     ports: ports.isEmpty ? "—" : ports,
                     age: creationDate.map(EventAge.from),
                     selector: item.spec.selector ?? [:],
-                    targetPods: targetPods
+                    targetPods: combinedTargets
                 )
-                summary.endpointCount = Set(targetPods).count
+                summary.endpointCount = combinedTargets.count
+                summary.readyEndpointCount = endpointStatus.ready.count
+                summary.notReadyEndpointCount = endpointStatus.notReady.count
+                summary.readyPods = endpointStatus.ready
+                summary.notReadyPods = endpointStatus.notReady
                 return summary
             }
         } catch {
@@ -1315,22 +1355,34 @@ final class KubectlClusterService: ClusterService {
         }
     }
 
-    private func fetchServiceEndpoints(contextName: String, namespace: String) async -> [String: [String]] {
+    private func fetchServiceEndpoints(contextName: String, namespace: String) async -> [String: ServiceEndpointStatus] {
         do {
             let list: KubectlEndpointList = try await runner.runJSON(
                 arguments: ["-n", namespace, "--context", contextName, "get", "endpoints", "-o", "json", "--request-timeout=15s"],
                 kubeconfigPath: kubeconfigPath
             )
-            var mapping: [String: [String]] = [:]
+            var mapping: [String: ServiceEndpointStatus] = [:]
             for item in list.items {
-                let podNames = item.subsets?.flatMap { subset -> [String] in
-                    subset.addresses?.compactMap { address in
-                        guard address.targetRef?.kind?.lowercased() == "pod" else { return nil }
-                        return address.targetRef?.name
-                    } ?? []
-                } ?? []
-                if !podNames.isEmpty {
-                    mapping[item.metadata.name, default: []] = Array(Set(podNames)).sorted()
+                var ready: Set<String> = []
+                var notReady: Set<String> = []
+                for subset in item.subsets ?? [] {
+                    if let addresses = subset.addresses {
+                        for address in addresses {
+                            guard address.targetRef?.kind?.lowercased() == "pod" else { continue }
+                            if let name = address.targetRef?.name { ready.insert(name) }
+                        }
+                    }
+                    if let addresses = subset.notReadyAddresses {
+                        for address in addresses {
+                            guard address.targetRef?.kind?.lowercased() == "pod" else { continue }
+                            if let name = address.targetRef?.name { notReady.insert(name) }
+                        }
+                    }
+                }
+                let combinedReady = Array(ready).sorted()
+                let combinedNotReady = Array(notReady.subtracting(ready)).sorted()
+                if !combinedReady.isEmpty || !combinedNotReady.isEmpty {
+                    mapping[item.metadata.name] = ServiceEndpointStatus(ready: combinedReady, notReady: combinedNotReady)
                 }
             }
             return mapping
@@ -1354,25 +1406,45 @@ final class KubectlClusterService: ClusterService {
                     let paths = rule.http?.paths.map { $0.path ?? "/" } ?? ["/"]
                     return "\(host) → \(paths.joined(separator: ", "))"
                 }.joined(separator: " | ")
-                let backends = item.spec.rules.flatMap { rule -> [String] in
-                    rule.http?.paths.compactMap { path in
-                        guard let service = path.backend.service else { return nil }
-                        if let portNumber = service.port?.number {
-                            return "\(service.name):\(portNumber)"
+
+                let routes: [IngressRouteSummary] = item.spec.rules.flatMap { rule -> [IngressRouteSummary] in
+                    let host = rule.host ?? "*"
+                    guard let paths = rule.http?.paths else { return [] }
+                    return paths.map { path in
+                        let backendService = path.backend.service
+                        let serviceName = backendService?.name ?? "—"
+                        let port: String?
+                        if let number = backendService?.port?.number {
+                            port = String(number)
+                        } else if let portName = backendService?.port?.name {
+                            port = portName
+                        } else {
+                            port = nil
                         }
-                        if let portName = service.port?.name {
-                            return "\(service.name):\(portName)"
-                        }
-                        return service.name
-                    } ?? []
+                        return IngressRouteSummary(
+                            host: host,
+                            path: path.path ?? "/",
+                            service: serviceName,
+                            port: port
+                        )
+                    }
+                }
+
+                let backends = routes.map { route -> String in
+                    if let port = route.port {
+                        return "\(route.service):\(port)"
+                    }
+                    return route.service
                 }.joined(separator: ", ")
+
                 return IngressSummary(
                     name: item.metadata.name,
                     className: item.spec.ingressClassName,
                     hostRules: hostRules.isEmpty ? "—" : hostRules,
                     serviceTargets: backends.isEmpty ? "—" : backends,
                     tls: !(item.spec.tls?.isEmpty ?? true),
-                    age: creationDate.map(EventAge.from)
+                    age: creationDate.map(EventAge.from),
+                    routes: routes
                 )
             }
         } catch {
@@ -1549,7 +1621,8 @@ final class KubectlClusterService: ClusterService {
                 diskUsage: diskUsageDisplay,
                 cpuUsageRatio: cpuRatio,
                 memoryUsageRatio: memoryRatio,
-                diskUsageRatio: diskRatio
+                diskUsageRatio: diskRatio,
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1620,7 +1693,8 @@ final class KubectlClusterService: ClusterService {
                 age: creationDate.map(EventAge.from),
                 secretEntries: nil,
                 configMapEntries: combinedEntries.isEmpty ? nil : combinedEntries,
-                permissions: .fullAccess
+                permissions: .fullAccess,
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1654,7 +1728,8 @@ final class KubectlClusterService: ClusterService {
                 summary: summaryParts.isEmpty ? nil : summaryParts.joined(separator: " · "),
                 age: creationDate.map(EventAge.from),
                 secretEntries: secretEntries,
-                permissions: permission
+                permissions: permission,
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1677,7 +1752,8 @@ final class KubectlClusterService: ClusterService {
                 dataCount: hard.isEmpty ? nil : hard.count,
                 summary: details,
                 age: creationDate.map(EventAge.from),
-                permissions: .fullAccess
+                permissions: .fullAccess,
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1708,7 +1784,8 @@ final class KubectlClusterService: ClusterService {
                 dataCount: limits.isEmpty ? nil : limits.count,
                 summary: details,
                 age: creationDate.map(EventAge.from),
-                permissions: .fullAccess
+                permissions: .fullAccess,
+                labels: item.metadata.labels ?? [:]
             )
         }
     }
@@ -1737,45 +1814,30 @@ final class KubectlClusterService: ClusterService {
         let missing = names.filter { cachedPermissions[$0] == nil }
         guard !missing.isEmpty else { return result }
 
-        let runner = self.runner
-        let kubeconfigPath = self.kubeconfigPath
-
         let fetched = await withTaskGroup(of: (String, ConfigResourcePermissions).self) { group -> [String: ConfigResourcePermissions] in
             for name in missing {
                 group.addTask {
-                    do {
-                        let canReveal = try await runner.run(
-                            arguments: [
-                                "auth",
-                                "can-i",
-                                "get",
-                                "secret/\(name)",
-                                "--namespace",
-                                namespace,
-                                "--context",
-                                contextName
-                            ],
-                            kubeconfigPath: kubeconfigPath
-                        ).trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("y")
+                    let revealGate = await self.authCanI(contextName: contextName, namespace: namespace, verb: "get", resource: "secret/\(name)")
+                    let patchGate = await self.authCanI(contextName: contextName, namespace: namespace, verb: "patch", resource: "secret/\(name)")
+                    let updateGate = await self.authCanI(contextName: contextName, namespace: namespace, verb: "update", resource: "secret/\(name)")
+                    let deleteGate = await self.authCanI(contextName: contextName, namespace: namespace, verb: "delete", resource: "secret/\(name)")
 
-                        let canEdit = try await runner.run(
-                            arguments: [
-                                "auth",
-                                "can-i",
-                                "update",
-                                "secret/\(name)",
-                                "--namespace",
-                                namespace,
-                                "--context",
-                                contextName
-                            ],
-                            kubeconfigPath: kubeconfigPath
-                        ).trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("y")
-
-                        return (name, ConfigResourcePermissions(canReveal: canReveal, canEdit: canEdit))
-                    } catch {
-                        return (name, ConfigResourcePermissions(canReveal: false, canEdit: false))
+                    let editGate: PermissionGate
+                    if patchGate.isAllowed || updateGate.isAllowed {
+                        editGate = .allowed
+                    } else {
+                        editGate = PermissionGate(isAllowed: false, reason: patchGate.reason ?? updateGate.reason)
                     }
+
+                    let permissions = ConfigResourcePermissions(
+                        canReveal: revealGate.isAllowed,
+                        canEdit: editGate.isAllowed,
+                        canDelete: deleteGate.isAllowed,
+                        revealReason: revealGate.reason,
+                        editReason: editGate.reason,
+                        deleteReason: deleteGate.reason
+                    )
+                    return (name, permissions)
                 }
             }
 
@@ -1795,6 +1857,135 @@ final class KubectlClusterService: ClusterService {
         }
 
         return result
+    }
+
+    private func fetchNamespacePermissions(contextName: String, namespace: String) async -> NamespacePermissions {
+        let key = NamespacePermissionCacheKey(context: contextName, namespace: namespace)
+        if let cached = namespacePermissionCache[key], Date().timeIntervalSince(cached.timestamp) < namespacePermissionCacheTTL {
+            return cached.permissions
+        }
+
+
+        async let getPods = authCanI(contextName: contextName, namespace: namespace, verb: "get", resource: "pods")
+        async let getPodLogs = authCanI(contextName: contextName, namespace: namespace, verb: "get", resource: "pods/log")
+        async let execPods = authCanI(contextName: contextName, namespace: namespace, verb: "create", resource: "pods/exec")
+        async let deletePods = authCanI(contextName: contextName, namespace: namespace, verb: "delete", resource: "pods")
+        async let portForwardPods = authCanI(contextName: contextName, namespace: namespace, verb: "create", resource: "pods/portforward")
+        async let patchConfigMaps = authCanI(contextName: contextName, namespace: namespace, verb: "patch", resource: "configmaps")
+        async let updateConfigMaps = authCanI(contextName: contextName, namespace: namespace, verb: "update", resource: "configmaps")
+        async let getSecrets = authCanI(contextName: contextName, namespace: namespace, verb: "get", resource: "secrets")
+        async let patchSecrets = authCanI(contextName: contextName, namespace: namespace, verb: "patch", resource: "secrets")
+        async let updateSecrets = authCanI(contextName: contextName, namespace: namespace, verb: "update", resource: "secrets")
+        async let deleteSecrets = authCanI(contextName: contextName, namespace: namespace, verb: "delete", resource: "secrets")
+        async let getServices = authCanI(contextName: contextName, namespace: namespace, verb: "get", resource: "services")
+        async let patchServices = authCanI(contextName: contextName, namespace: namespace, verb: "patch", resource: "services")
+        async let updateServices = authCanI(contextName: contextName, namespace: namespace, verb: "update", resource: "services")
+        async let deleteServices = authCanI(contextName: contextName, namespace: namespace, verb: "delete", resource: "services")
+        async let getPVCs = authCanI(contextName: contextName, namespace: namespace, verb: "get", resource: "persistentvolumeclaims")
+        async let patchPVCs = authCanI(contextName: contextName, namespace: namespace, verb: "patch", resource: "persistentvolumeclaims")
+        async let updatePVCs = authCanI(contextName: contextName, namespace: namespace, verb: "update", resource: "persistentvolumeclaims")
+        async let deletePVCs = authCanI(contextName: contextName, namespace: namespace, verb: "delete", resource: "persistentvolumeclaims")
+
+        var permissions = NamespacePermissions()
+        permissions.apply(await getPods, to: .getPods)
+        permissions.apply(await getPodLogs, to: .viewPodLogs)
+        permissions.apply(await execPods, to: .execPods)
+        permissions.apply(await deletePods, to: .deletePods)
+        permissions.apply(await portForwardPods, to: .portForwardPods)
+
+        let patchGate = await patchConfigMaps
+        let updateGate = await updateConfigMaps
+        let editConfigMapGate: PermissionGate
+        if patchGate.isAllowed || updateGate.isAllowed {
+            editConfigMapGate = .allowed
+        } else {
+            let reason = patchGate.reason ?? updateGate.reason
+            editConfigMapGate = PermissionGate(isAllowed: false, reason: reason)
+        }
+        permissions.apply(editConfigMapGate, to: .editConfigMaps)
+
+        permissions.apply(await getSecrets, to: .revealSecrets)
+        let patchSecretGate = await patchSecrets
+        let updateSecretGate = await updateSecrets
+        let editSecretGate: PermissionGate
+        if patchSecretGate.isAllowed || updateSecretGate.isAllowed {
+            editSecretGate = .allowed
+        } else {
+            let reason = patchSecretGate.reason ?? updateSecretGate.reason
+            editSecretGate = PermissionGate(isAllowed: false, reason: reason)
+        }
+        permissions.apply(editSecretGate, to: .editSecrets)
+        permissions.apply(await deleteSecrets, to: .deleteSecrets)
+
+        permissions.apply(await getServices, to: .getServices)
+        let patchServiceGate = await patchServices
+        let updateServiceGate = await updateServices
+        let editServiceGate: PermissionGate
+        if patchServiceGate.isAllowed || updateServiceGate.isAllowed {
+            editServiceGate = .allowed
+        } else {
+            let reason = patchServiceGate.reason ?? updateServiceGate.reason
+            editServiceGate = PermissionGate(isAllowed: false, reason: reason)
+        }
+        permissions.apply(editServiceGate, to: .editServices)
+        permissions.apply(await deleteServices, to: .deleteServices)
+
+        permissions.apply(await getPVCs, to: .getPersistentVolumeClaims)
+        let patchPVCGate = await patchPVCs
+        let updatePVCGate = await updatePVCs
+        let editPVCGate: PermissionGate
+        if patchPVCGate.isAllowed || updatePVCGate.isAllowed {
+            editPVCGate = .allowed
+        } else {
+            let reason = patchPVCGate.reason ?? updatePVCGate.reason
+            editPVCGate = PermissionGate(isAllowed: false, reason: reason)
+        }
+        permissions.apply(editPVCGate, to: .editPersistentVolumeClaims)
+        permissions.apply(await deletePVCs, to: .deletePersistentVolumeClaims)
+
+        namespacePermissionCache[key] = NamespacePermissionCacheEntry(timestamp: Date(), permissions: permissions)
+        return permissions
+    }
+
+    private func authCanI(contextName: String, namespace: String, verb: String, resource: String) async -> PermissionGate {
+        do {
+            let output = try await runner.run(
+                arguments: [
+                    "auth",
+                    "can-i",
+                    verb,
+                    resource,
+                    "--namespace",
+                    namespace,
+                    "--context",
+                    contextName,
+                    "--reason"
+                ],
+                kubeconfigPath: kubeconfigPath
+            )
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowercased = trimmed.lowercased()
+            if lowercased.hasPrefix("y") {
+                return .allowed
+            }
+            let reason = extractReason(from: trimmed) ?? "Denied by Kubernetes RBAC."
+            return PermissionGate(isAllowed: false, reason: reason)
+        } catch {
+            KubectlDefaults.debug("auth can-i \(verb) \(resource) failed for namespace \(namespace) in context \(contextName): \(error)")
+            return PermissionGate(isAllowed: false, reason: error.localizedDescription)
+        }
+    }
+
+    private func extractReason(from message: String) -> String? {
+        if let range = message.range(of: "-") {
+            let substring = message[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return substring.isEmpty ? nil : substring
+        }
+        if let range = message.range(of: ":") {
+            let substring = message[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return substring.isEmpty ? nil : substring
+        }
+        return message.lowercased().hasPrefix("no") ? message : nil
     }
 
     private func formatKeyValueSummary(_ dictionary: [String: String]) -> String? {
@@ -1897,7 +2088,8 @@ final class KubectlClusterService: ClusterService {
                 taints: taints,
                 kubeletVersion: version,
                 age: creationDate.map(EventAge.from),
-                conditions: conditions
+                conditions: conditions,
+                labels: item.metadata.labels ?? [:]
             )
             nodes.append(node)
         }
@@ -1984,7 +2176,9 @@ final class KubectlClusterService: ClusterService {
         var patch: [String: Any] = [
             "data": data
         ]
-        patch["binaryData"] = binaryData
+        if !binaryData.isEmpty {
+            patch["binaryData"] = binaryData
+        }
 
         let jsonData = try JSONSerialization.data(withJSONObject: patch, options: [])
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
@@ -2808,6 +3002,7 @@ private struct KubectlDeploymentList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Spec: Decodable {
             let replicas: Int?
@@ -2831,6 +3026,7 @@ private struct KubectlStatefulSetList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Spec: Decodable {
             let replicas: Int?
@@ -2854,6 +3050,7 @@ private struct KubectlDaemonSetList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Status: Decodable {
             let desiredNumberScheduled: Int?
@@ -2873,6 +3070,7 @@ private struct KubectlCronJobList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Spec: Decodable {
             let successfulJobsHistoryLimit: Int?
@@ -3358,6 +3556,7 @@ private struct KubectlConfigMapList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         let metadata: Metadata
         let data: [String: String]?
@@ -3373,6 +3572,7 @@ private struct KubectlSecretList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         let metadata: Metadata
         let type: String?
@@ -3388,6 +3588,7 @@ private struct KubectlResourceQuotaList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Status: Decodable {
             let hard: [String: String]?
@@ -3405,6 +3606,7 @@ private struct KubectlLimitRangeList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Spec: Decodable {
             struct Limit: Decodable {
@@ -3428,6 +3630,7 @@ private struct KubectlNodeList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Spec: Decodable {
             struct Taint: Decodable {
@@ -3478,6 +3681,7 @@ private struct KubectlReplicaSetList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Spec: Decodable {
             let replicas: Int?
@@ -3501,6 +3705,7 @@ private struct KubectlReplicationControllerList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Spec: Decodable {
             let replicas: Int?
@@ -3523,6 +3728,7 @@ private struct KubectlJobList: Decodable {
             let name: String
             let uid: String?
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Status: Decodable {
             struct Condition: Decodable {
@@ -3545,6 +3751,7 @@ private struct KubectlServiceList: Decodable {
         struct Metadata: Decodable {
             let name: String
             let creationTimestamp: String?
+            let labels: [String: String]?
         }
         struct Port: Decodable {
             let port: Int?
@@ -3563,6 +3770,11 @@ private struct KubectlServiceList: Decodable {
     let items: [Item]
 }
 
+private struct ServiceEndpointStatus {
+    var ready: [String]
+    var notReady: [String]
+}
+
 private struct KubectlEndpointList: Decodable {
     struct Item: Decodable {
         struct Metadata: Decodable { let name: String }
@@ -3575,6 +3787,7 @@ private struct KubectlEndpointList: Decodable {
                 let targetRef: TargetRef?
             }
             let addresses: [Address]?
+            let notReadyAddresses: [Address]?
         }
         let metadata: Metadata
         let subsets: [Subset]?
