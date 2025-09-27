@@ -1,0 +1,1780 @@
+import Foundation
+import SwiftUI
+
+@MainActor
+final class AppModel: ObservableObject {
+    @Published private(set) var clusters: [Cluster] = []
+    @Published private(set) var activePortForwards: [ActivePortForward] = []
+    @Published private(set) var connectedClusterID: Cluster.ID?
+    @Published var selectedClusterID: Cluster.ID? {
+        didSet { persistSelection() }
+    }
+    @Published var selectedNamespaceID: Namespace.ID? {
+        didSet { persistSelection() }
+    }
+    @Published var selectedResourceTab: ClusterDetailView.Tab = .overview {
+        didSet { persistSelection() }
+    }
+    @Published var error: AppModelError?
+    @Published var banner: BannerMessage?
+    @Published private(set) var kubeconfigSources: [String] = []
+    @Published private(set) var nodeActionsInProgress: Set<String> = []
+    @Published private(set) var secretActionFeedback: SecretActionFeedback?
+    @Published private(set) var nodeActionFeedback: [String: NodeActionFeedback] = [:]
+    @Published private(set) var helmLoadingContexts: Set<String> = []
+    @Published private(set) var helmErrors: [String: String] = [:]
+    @Published private(set) var inspectorSelection: InspectorSelection = .none
+    @Published private(set) var clusterOverviewMetrics: [Cluster.ID: ClusterOverviewMetrics] = [:]
+
+    private var kubeconfigEnvValue: String? {
+        AppModel.joinedKubeconfigPath(for: kubeconfigSources)
+    }
+
+    struct ExecCommandOutput: Equatable {
+        var output: String
+        var exitCode: Int32?
+        var isError: Bool
+
+        var displayExitCode: String {
+            guard let exitCode else {
+                return isError ? "exit status ?" : "exit status 0"
+            }
+            return "exit status \(exitCode)"
+        }
+    }
+
+    static let allNamespacesNamespaceID = UUID(uuidString: "ffffffff-ffff-ffff-ffff-ffffffffffff")!
+    static let allNamespacesDisplayName = "All Namespaces"
+    private static let allNamespacesPreferenceValue = "__ALL_NAMESPACES__"
+
+    enum InspectorSelection: Equatable {
+        case none
+        case workload(clusterID: Cluster.ID, namespaceID: Namespace.ID, workloadID: WorkloadSummary.ID)
+        case pod(clusterID: Cluster.ID, namespaceID: Namespace.ID, podID: PodSummary.ID)
+        case helm(clusterID: Cluster.ID, releaseID: HelmRelease.ID)
+        case service(clusterID: Cluster.ID, namespaceID: Namespace.ID, serviceID: ServiceSummary.ID)
+        case ingress(clusterID: Cluster.ID, namespaceID: Namespace.ID, ingressID: IngressSummary.ID)
+        case persistentVolumeClaim(clusterID: Cluster.ID, namespaceID: Namespace.ID, claimID: PersistentVolumeClaimSummary.ID)
+    }
+
+    private struct ClusterMetricHistory {
+        var cpuPoints: [MetricPoint] = []
+        var memoryPoints: [MetricPoint] = []
+        var diskPoints: [MetricPoint] = []
+        var networkPoints: [MetricPoint] = []
+        var lastNetworkTotals: NetworkTotals?
+        var nodeHeatmap: [HeatmapEntry] = []
+        var podHeatmap: [HeatmapEntry] = []
+    }
+
+    private struct NetworkTotals {
+        let rxBytes: Double
+        let txBytes: Double
+        let timestamp: Date
+    }
+
+    private struct WorkloadHistoryKey: Hashable {
+        let namespace: String
+        let name: String
+        let kind: WorkloadKind
+    }
+
+    private var clusterService: ClusterService
+    private var logService: LogStreamingService
+    private var execService: ExecService
+    private var portForwardService: PortForwardService
+    private var editService: EditService
+    private var helmService: HelmService
+    private var clusterMetricsHistory: [Cluster.ID: ClusterMetricHistory] = [:]
+    private var workloadRolloutHistory: [Cluster.ID: [WorkloadHistoryKey: WorkloadRolloutSeries]] = [:]
+
+    private var clusterRefreshTask: Task<Void, Never>?
+    private var namespaceRefreshTasks: [String: Task<Void, Never>] = [:]
+    private let clusterRefreshInterval: TimeInterval = 30
+    private let namespaceRefreshInterval: TimeInterval = 20
+    private var clusterRefreshIntervalNanoseconds: UInt64 { UInt64(max(clusterRefreshInterval, 5) * 1_000_000_000) }
+    private var namespaceRefreshIntervalNanoseconds: UInt64 { UInt64(max(namespaceRefreshInterval, 5) * 1_000_000_000) }
+    private let metricsSampleLimit = 60
+    private var isRestoringPreferences = true
+    private var pendingPreferredContext: String?
+    private var pendingPreferredNamespace: String?
+    private var pendingPreferredConnectedContext: String?
+    private var pendingPreferredTab: ClusterDetailView.Tab?
+
+    private enum PreferenceKeys {
+        static let selectedContext = "kubex.selected_context"
+        static let selectedNamespace = "kubex.selected_namespace"
+        static let connectedContext = "kubex.connected_context"
+        static let selectedTab = "kubex.selected_tab"
+        static let kubeconfigSources = "kubex.kubeconfig_sources"
+        static let kubeconfigPath = "kubex.kubeconfig_path"
+    }
+
+    private static func normalizePath(_ path: String?) -> String? {
+        guard let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        return expanded.isEmpty ? nil : expanded
+    }
+
+    private static func normalizePaths(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalized: [String] = []
+        for path in paths {
+            guard let resolved = normalizePath(path) else { continue }
+            guard FileManager.default.fileExists(atPath: resolved) else { continue }
+            if seen.insert(resolved).inserted {
+                normalized.append(resolved)
+            }
+        }
+        return normalized
+    }
+
+    private static func joinedKubeconfigPath(for paths: [String]) -> String? {
+        guard !paths.isEmpty else {
+            return KubectlDefaults.defaultKubeconfigPath()
+        }
+        return paths.joined(separator: ":")
+    }
+
+    init(
+        clusterService: ClusterService = KubectlClusterService(),
+        logService: LogStreamingService = KubectlLogStreamingService(),
+        execService: ExecService = KubectlExecService(),
+        portForwardService: PortForwardService = KubectlPortForwardService(),
+        editService: EditService = KubectlEditService(),
+        helmService: HelmService = HelmCLIService()
+    ) {
+        let defaults = UserDefaults.standard
+
+        self.clusterService = clusterService
+        self.logService = logService
+        self.execService = execService
+        self.portForwardService = portForwardService
+        self.editService = editService
+        self.helmService = helmService
+
+        let storedSources: [String]
+        if let data = defaults.data(forKey: PreferenceKeys.kubeconfigSources),
+           let decoded = try? JSONDecoder().decode([String].self, from: data) {
+            storedSources = decoded
+        } else if let legacyPath = defaults.string(forKey: PreferenceKeys.kubeconfigPath) {
+            storedSources = [legacyPath]
+        } else if let defaultPath = KubectlDefaults.defaultKubeconfigPath() {
+            storedSources = [defaultPath]
+        } else {
+            storedSources = []
+        }
+
+        let normalizedSources = AppModel.normalizePaths(storedSources)
+        self.kubeconfigSources = normalizedSources
+
+        rebuildServices(with: normalizedSources)
+
+        self.pendingPreferredContext = defaults.string(forKey: PreferenceKeys.selectedContext)
+        self.pendingPreferredNamespace = defaults.string(forKey: PreferenceKeys.selectedNamespace)
+        self.pendingPreferredConnectedContext = defaults.string(forKey: PreferenceKeys.connectedContext)
+        if let tabKey = defaults.string(forKey: PreferenceKeys.selectedTab),
+           let tab = ClusterDetailView.Tab(preferenceValue: tabKey) {
+            self.selectedResourceTab = tab
+            self.pendingPreferredTab = tab
+        }
+    }
+
+    func setInspectorSelection(_ selection: InspectorSelection) {
+        if inspectorSelection != selection {
+            inspectorSelection = selection
+        }
+    }
+
+    func clearInspectorSelection() {
+        setInspectorSelection(.none)
+    }
+
+    func metrics(for clusterID: Cluster.ID) -> ClusterOverviewMetrics? {
+        clusterOverviewMetrics[clusterID]
+    }
+
+    func workloadRolloutSeries(for clusterID: Cluster.ID, namespace: String, workloadName: String, kind: WorkloadKind) -> WorkloadRolloutSeries? {
+        workloadRolloutHistory[clusterID]?[WorkloadHistoryKey(namespace: namespace, name: workloadName, kind: kind)]
+    }
+
+    func refreshClusters() async {
+        defer {
+            isRestoringPreferences = false
+            persistSelection()
+        }
+        do {
+            let previousSelectedContext = selectedCluster?.contextName
+            let previousNamespace: String?
+            if selectedNamespaceID == AppModel.allNamespacesNamespaceID {
+                previousNamespace = AppModel.allNamespacesPreferenceValue
+            } else {
+                previousNamespace = selectedNamespace?.name
+            }
+            let previousConnectedContext = connectedCluster?.contextName
+
+            if let currentID = connectedClusterID {
+                await disconnectCluster(clusterID: currentID)
+            }
+
+            let clusters = try await clusterService.loadClusters()
+            self.clusters = clusters
+            let newClusterIDs = Set(clusters.map { $0.id })
+            let obsoleteMetricKeys = clusterOverviewMetrics.keys.filter { !newClusterIDs.contains($0) }
+            for key in obsoleteMetricKeys {
+                clearClusterMetrics(for: key)
+            }
+
+            if let desiredContext = [pendingPreferredContext, previousSelectedContext, clusters.first?.contextName].compactMap({ $0 }).first,
+               let restored = clusters.first(where: { $0.contextName == desiredContext }) {
+                selectedClusterID = restored.id
+                pendingPreferredContext = nil
+            } else {
+                selectedClusterID = clusters.first?.id
+            }
+
+            connectedClusterID = nil
+            selectedNamespaceID = nil
+            activePortForwards.removeAll()
+
+            if let pendingTab = pendingPreferredTab {
+                selectedResourceTab = pendingTab
+                pendingPreferredTab = nil
+            } else {
+                selectedResourceTab = .overview
+            }
+
+            let namespacePreference = previousNamespace ?? pendingPreferredNamespace
+            let desiredConnectedContext = previousConnectedContext
+                ?? pendingPreferredConnectedContext
+                ?? pendingPreferredContext
+
+            if let contextName = desiredConnectedContext,
+               let target = clusters.first(where: { $0.contextName == contextName }) {
+                await connectCluster(clusterID: target.id, contextName: contextName, preferredNamespace: namespacePreference)
+                pendingPreferredConnectedContext = nil
+            } else {
+                error = nil
+            }
+        } catch {
+            self.error = AppModelError(message: error.localizedDescription)
+        }
+    }
+
+    var selectedCluster: Cluster? {
+        clusters.first { $0.id == selectedClusterID }
+    }
+
+    var connectedCluster: Cluster? {
+        guard let id = connectedClusterID else { return nil }
+        return clusters.first { $0.id == id }
+    }
+
+    var selectedNamespace: Namespace? {
+        guard let cluster = selectedCluster, cluster.isConnected else { return nil }
+        if selectedNamespaceID == AppModel.allNamespacesNamespaceID {
+            return makeAllNamespacesNamespace(from: cluster)
+        }
+        if let id = selectedNamespaceID,
+           let namespace = cluster.namespaces.first(where: { $0.id == id }) {
+            if namespace.isLoaded {
+                return namespace
+            } else if let loaded = cluster.namespaces.first(where: { $0.id == id && $0.isLoaded }) {
+                return loaded
+            } else {
+                return namespace
+            }
+        }
+        return cluster.namespaces.first
+    }
+
+    var unhealthySummary: [String] {
+        guard let cluster = connectedCluster else { return [] }
+        return cluster.namespaces.flatMap { namespace in
+            namespace.workloads
+                .filter { $0.status != .healthy }
+                .map { "\(namespace.name): \($0.name)" }
+        }
+    }
+
+    var currentNamespaces: [Namespace]? {
+        guard let cluster = selectedCluster, cluster.isConnected else { return nil }
+        var namespaces = cluster.namespaces
+        if !namespaces.isEmpty {
+            let aggregated = makeAllNamespacesNamespace(from: cluster)
+            namespaces.insert(aggregated, at: 0)
+        }
+        return namespaces
+    }
+
+    private func makeAllNamespacesNamespace(from cluster: Cluster) -> Namespace {
+        let allLoaded = cluster.namespaces.contains { $0.isLoaded }
+        var aggregated = Namespace(
+            id: AppModel.allNamespacesNamespaceID,
+            name: AppModel.allNamespacesDisplayName,
+            workloads: [],
+            pods: [],
+            events: [],
+            alerts: [],
+            configResources: [],
+            services: [],
+            ingresses: [],
+            persistentVolumeClaims: [],
+            serviceAccounts: [],
+            roles: [],
+            roleBindings: [],
+            isLoaded: allLoaded
+        )
+
+        for namespace in cluster.namespaces {
+            aggregated.workloads.append(contentsOf: namespace.workloads)
+            aggregated.pods.append(contentsOf: namespace.pods)
+            aggregated.events.append(contentsOf: namespace.events)
+            aggregated.alerts.append(contentsOf: namespace.alerts)
+            aggregated.configResources.append(contentsOf: namespace.configResources)
+            aggregated.services.append(contentsOf: namespace.services)
+            aggregated.ingresses.append(contentsOf: namespace.ingresses)
+            aggregated.persistentVolumeClaims.append(contentsOf: namespace.persistentVolumeClaims)
+            aggregated.serviceAccounts.append(contentsOf: namespace.serviceAccounts)
+            aggregated.roles.append(contentsOf: namespace.roles)
+            aggregated.roleBindings.append(contentsOf: namespace.roleBindings)
+        }
+
+        return aggregated
+    }
+
+    func namespace(clusterID: Cluster.ID, named name: String) -> Namespace? {
+        clusters.first(where: { $0.id == clusterID })?.namespaces.first(where: { $0.name == name })
+    }
+
+    func ensureAllNamespacesLoaded(clusterID: Cluster.ID, contextName: String) async {
+        guard let clusterIndex = clusters.firstIndex(where: { $0.id == clusterID }) else { return }
+        let namespaceNames = clusters[clusterIndex].namespaces.map { $0.name }
+        for name in namespaceNames {
+            await loadNamespaceIfNeeded(clusterID: clusterID, namespaceName: name)
+        }
+    }
+
+    func connectSelectedCluster() async {
+        guard let cluster = selectedCluster else { return }
+        KubectlDefaults.debug("Connect requested for \(cluster.contextName)")
+        await connectCluster(clusterID: cluster.id, contextName: cluster.contextName, preferredNamespace: nil)
+    }
+
+    func disconnectCurrentCluster() async {
+        guard let currentID = connectedClusterID else { return }
+        await disconnectCluster(clusterID: currentID)
+    }
+
+    func applyKubeconfig(at inputPath: String?) async -> Result<Void, AppModelError> {
+        guard let resolvedPath = AppModel.normalizePath(inputPath) ?? KubectlDefaults.defaultKubeconfigPath() else {
+            return .failure(AppModelError(message: "Provide a kubeconfig path or ensure ~/.kube/config exists."))
+        }
+
+        if !FileManager.default.fileExists(atPath: resolvedPath) {
+            return .failure(AppModelError(message: "Kubeconfig not found at \(resolvedPath)"))
+        }
+
+        do {
+            try await validateKubeconfig(path: resolvedPath)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            return .failure(AppModelError(message: message))
+        }
+
+        var updated = kubeconfigSources
+        if !updated.contains(resolvedPath) {
+            updated.append(resolvedPath)
+        }
+        updated = AppModel.normalizePaths(updated)
+        kubeconfigSources = updated
+        persistKubeconfigSources(updated)
+
+        clearSelectionPreferences()
+        isRestoringPreferences = true
+        pendingPreferredContext = nil
+        pendingPreferredNamespace = nil
+        pendingPreferredConnectedContext = nil
+        pendingPreferredTab = nil
+
+        rebuildServices(with: updated)
+
+        await refreshClusters()
+        return .success(())
+    }
+
+    func makeLogStream(for request: LogStreamRequest) -> AsyncThrowingStream<LogStreamEvent, Error> {
+        logService.streamLogs(for: request)
+    }
+
+    func removeKubeconfigSource(at index: Int) async {
+        guard kubeconfigSources.indices.contains(index) else { return }
+        var updated = kubeconfigSources
+        updated.remove(at: index)
+        if updated.isEmpty, let defaultPath = KubectlDefaults.defaultKubeconfigPath(), FileManager.default.fileExists(atPath: defaultPath) {
+            updated = [defaultPath]
+        }
+        updated = AppModel.normalizePaths(updated)
+        kubeconfigSources = updated
+        persistKubeconfigSources(updated)
+
+        clearSelectionPreferences()
+        isRestoringPreferences = true
+        pendingPreferredContext = nil
+        pendingPreferredNamespace = nil
+        pendingPreferredConnectedContext = nil
+        pendingPreferredTab = nil
+
+        rebuildServices(with: updated)
+        await refreshClusters()
+    }
+
+    func fetchPodYAML(cluster: Cluster, namespace: Namespace, pod: PodSummary) async -> Result<String, AppModelError> {
+        await fetchResourceYAML(
+            contextName: cluster.contextName,
+            namespace: namespace.name,
+            resourceType: "pod",
+            name: pod.name
+        )
+    }
+
+    func fetchWorkloadYAML(cluster: Cluster, namespace: Namespace, workload: WorkloadSummary) async -> Result<String, AppModelError> {
+        guard let resource = workload.kind.kubectlResourceName else {
+            return .failure(AppModelError(message: "YAML unavailable for \(workload.kind.displayName)."))
+        }
+        return await fetchResourceYAML(
+            contextName: cluster.contextName,
+            namespace: namespace.name,
+            resourceType: resource,
+            name: workload.name
+        )
+    }
+
+    func applyPodYAML(cluster: Cluster, namespace: Namespace, pod: PodSummary, yaml: String) async -> Result<String, AppModelError> {
+        await applyNamespaceManifest(
+            cluster: cluster,
+            namespaceName: namespace.name,
+            yaml: yaml,
+            successMessage: "Pod \(pod.name) updated"
+        )
+    }
+
+    func applyWorkloadYAML(cluster: Cluster, namespace: Namespace, workload: WorkloadSummary, yaml: String) async -> Result<String, AppModelError> {
+        await applyNamespaceManifest(
+            cluster: cluster,
+            namespaceName: namespace.name,
+            yaml: yaml,
+            successMessage: "Applied changes to \(workload.name)"
+        )
+    }
+
+    func executePodCommand(
+        cluster: Cluster,
+        namespace: Namespace,
+        pod: PodSummary,
+        container: String?,
+        command: String
+    ) async -> Result<ExecCommandOutput, AppModelError> {
+        guard cluster.isConnected else {
+            return .failure(AppModelError(message: "Connect to the cluster before running exec commands."))
+        }
+
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .failure(AppModelError(message: "Enter a command to execute."))
+        }
+
+        var arguments = ["exec", "-i", pod.name, "-n", namespace.name]
+        if let container, !container.isEmpty {
+            arguments.append(contentsOf: ["-c", container])
+        }
+        arguments.append(contentsOf: ["--context", cluster.contextName, "--", "/bin/sh", "-lc", trimmed])
+
+        let runner = KubectlRunner()
+        do {
+            let output = try await runner.run(
+                arguments: arguments,
+                kubeconfigPath: kubeconfigEnvValue ?? KubectlDefaults.defaultKubeconfigPath()
+            )
+            let normalized = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .success(ExecCommandOutput(output: normalized.isEmpty ? "(no output)" : normalized, exitCode: 0, isError: false))
+        } catch let kubectlError as KubectlError {
+            let payload = (kubectlError.output ?? kubectlError.message).trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = payload.isEmpty ? kubectlError.message : payload
+            return .success(ExecCommandOutput(output: message, exitCode: kubectlError.exitCode, isError: true))
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            return .failure(AppModelError(message: message))
+        }
+    }
+
+    func startPortForward(request: PortForwardRequest) async {
+        guard connectedClusterID == request.clusterID else {
+            self.error = AppModelError(message: "Connect to the cluster before starting a port forward.")
+            return
+        }
+        do {
+            let forward = try await portForwardService.startForward(request) { [weak self] event in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.handlePortForwardEvent(event)
+                }
+            }
+            activePortForwards.append(forward)
+            error = nil
+        } catch {
+            self.error = AppModelError(message: error.localizedDescription)
+        }
+    }
+
+    func stopPortForward(id: ActivePortForward.ID) async {
+        guard let index = activePortForwards.firstIndex(where: { $0.id == id }) else { return }
+        let forward = activePortForwards[index]
+        do {
+            try await portForwardService.stopForward(forward)
+            activePortForwards.remove(at: index)
+            error = nil
+        } catch {
+            self.error = AppModelError(message: error.localizedDescription)
+        }
+    }
+
+    private func handlePortForwardEvent(_ event: PortForwardLifecycleEvent) {
+        switch event {
+        case .terminated(let id, _, let kubectlError):
+            guard let index = activePortForwards.firstIndex(where: { $0.id == id }) else {
+                if let kubectlError {
+                    let message = sanitizeErrorMessage(kubectlError.message)
+                    self.error = AppModelError(message: message)
+                }
+                return
+            }
+
+            if let kubectlError {
+                let message = sanitizeErrorMessage(kubectlError.message)
+                activePortForwards[index].status = .failed(message)
+                self.error = AppModelError(message: message)
+            } else {
+                activePortForwards.remove(at: index)
+            }
+        }
+    }
+
+    @discardableResult
+    func openShell(for cluster: Cluster, namespace: Namespace, pod: PodSummary, defaultCommand: [String] = ["/bin/sh"]) async -> ExecSession? {
+        guard cluster.isConnected, connectedClusterID == cluster.id else {
+            self.error = AppModelError(message: "Connect to the cluster before opening a shell.")
+            return nil
+        }
+        let session = ExecSession(
+            id: UUID(),
+            clusterID: cluster.id,
+            contextName: cluster.contextName,
+            namespace: namespace.name,
+            podName: pod.name,
+            containerName: pod.primaryContainer,
+            command: defaultCommand,
+            startedAt: Date()
+        )
+        do {
+            let established = try await execService.openShell(for: session)
+            return established
+        } catch {
+            self.error = AppModelError(message: error.localizedDescription)
+            return nil
+        }
+    }
+
+    func editPod(cluster: Cluster, namespace: Namespace, pod: PodSummary) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before editing resources.")
+            return
+        }
+
+        let request = ResourceEditRequest(
+            contextName: cluster.contextName,
+            namespace: namespace.name,
+            kind: "pod",
+            name: pod.name
+        )
+
+        do {
+            try await editService.editResource(request)
+            error = nil
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+        }
+    }
+
+    func fetchPodDetail(cluster: Cluster, namespace: Namespace, pod: PodSummary) async -> Result<PodDetailData, AppModelError> {
+        do {
+            let detail = try await clusterService.loadPodDetail(contextName: cluster.contextName, namespace: namespace.name, pod: pod.name)
+            return .success(detail)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            return .failure(AppModelError(message: message))
+        }
+    }
+
+    func attachPod(cluster: Cluster, namespace: Namespace, pod: PodSummary) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before attaching.")
+            return
+        }
+        var components = ["kubectl", "attach", "-it", pod.name, "-n", namespace.name, "--context", cluster.contextName]
+        if let container = pod.primaryContainer {
+            components.append(contentsOf: ["-c", container])
+        }
+        launchKubectlInTerminal(arguments: components)
+    }
+
+    func deletePod(cluster: Cluster, namespace: Namespace, pod: PodSummary, force: Bool) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before deleting.")
+            return
+        }
+        var arguments = ["delete", "pod", pod.name, "-n", namespace.name, "--context", cluster.contextName]
+        if force {
+            arguments.append(contentsOf: ["--grace-period", "0", "--force"])
+        }
+        do {
+            try await runKubectl(arguments: arguments)
+            error = nil
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+        }
+    }
+
+    func openNodeShell(cluster: Cluster, node: NodeInfo) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before launching a node shell.")
+            return
+        }
+        let arguments = [
+            "debug",
+            "node/\(node.name)",
+            "-it",
+            "--context",
+            cluster.contextName,
+            "--image=registry.k8s.io/e2e-test-images/agnhost:2.45",
+            "--",
+            "/bin/sh"
+        ]
+        showBanner("Launching debug shell for \(node.name)…", style: .info)
+        launchKubectlInTerminal(arguments: arguments)
+        showBanner("Debug shell opened for \(node.name)", style: .success)
+    }
+
+    func cordonNode(cluster: Cluster, node: NodeInfo) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before cordoning nodes.")
+            return
+        }
+        showBanner("Cordoning \(node.name)…", style: .info)
+        let key = beginNodeAction(contextName: cluster.contextName, nodeName: node.name)
+        defer { endNodeAction(key: key) }
+        do {
+            try await runKubectl(arguments: ["cordon", node.name, "--context", cluster.contextName])
+            error = nil
+            invalidateCachedNodeData(for: cluster)
+            await updateClusterSnapshot(clusterID: cluster.id, contextName: cluster.contextName)
+            showBanner("Node \(node.name) cordoned", style: .success)
+            nodeActionFeedback.removeValue(forKey: key)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+            nodeActionFeedback[key] = NodeActionFeedback(
+                contextName: cluster.contextName,
+                nodeName: node.name,
+                message: message
+            )
+        }
+    }
+
+    func drainNode(cluster: Cluster, node: NodeInfo) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before draining nodes.")
+            return
+        }
+        let arguments = [
+            "drain",
+            node.name,
+            "--context",
+            cluster.contextName,
+            "--ignore-daemonsets",
+            "--delete-emptydir-data",
+            "--force",
+            "--grace-period",
+            "0",
+            "--timeout",
+            "5m"
+        ]
+        showBanner("Draining \(node.name)…", style: .info)
+        let key = beginNodeAction(contextName: cluster.contextName, nodeName: node.name)
+        defer { endNodeAction(key: key) }
+        do {
+            try await runKubectl(arguments: arguments)
+            error = nil
+            invalidateCachedNodeData(for: cluster)
+            await updateClusterSnapshot(clusterID: cluster.id, contextName: cluster.contextName)
+            showBanner("Node \(node.name) drained", style: .success)
+            nodeActionFeedback.removeValue(forKey: key)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+            nodeActionFeedback[key] = NodeActionFeedback(
+                contextName: cluster.contextName,
+                nodeName: node.name,
+                message: message
+            )
+        }
+    }
+
+    func editNode(cluster: Cluster, node: NodeInfo) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before editing nodes.")
+            return
+        }
+
+        let request = ResourceEditRequest(
+            contextName: cluster.contextName,
+            namespace: nil,
+            kind: "node",
+            name: node.name
+        )
+
+        showBanner("Editing \(node.name)…", style: .info)
+        let key = beginNodeAction(contextName: cluster.contextName, nodeName: node.name)
+        defer { endNodeAction(key: key) }
+        do {
+            try await editService.editResource(request)
+            error = nil
+            invalidateCachedNodeData(for: cluster)
+            await updateClusterSnapshot(clusterID: cluster.id, contextName: cluster.contextName)
+            showBanner("Edit applied to \(node.name)", style: .success)
+            nodeActionFeedback.removeValue(forKey: key)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+            nodeActionFeedback[key] = NodeActionFeedback(
+                contextName: cluster.contextName,
+                nodeName: node.name,
+                message: message
+            )
+        }
+    }
+
+    func deleteNode(cluster: Cluster, node: NodeInfo) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before deleting nodes.")
+            return
+        }
+
+        showBanner("Deleting \(node.name)…", style: .info)
+        let key = beginNodeAction(contextName: cluster.contextName, nodeName: node.name)
+        defer { endNodeAction(key: key) }
+        do {
+            try await runKubectl(arguments: ["delete", "node", node.name, "--context", cluster.contextName])
+            error = nil
+            invalidateCachedNodeData(for: cluster)
+            await updateClusterSnapshot(clusterID: cluster.id, contextName: cluster.contextName)
+            showBanner("Deleted node \(node.name)", style: .success)
+            nodeActionFeedback.removeValue(forKey: key)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+            nodeActionFeedback[key] = NodeActionFeedback(
+                contextName: cluster.contextName,
+                nodeName: node.name,
+                message: message
+            )
+        }
+    }
+
+    func updateSecret(
+        cluster: Cluster,
+        namespace: Namespace,
+        secret: ConfigResourceSummary,
+        entries: [SecretEntryEditor]
+    ) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before editing secrets.")
+            secretActionFeedback = SecretActionFeedback(
+                secretName: secret.name,
+                namespace: namespace.name,
+                status: .failure,
+                message: "Cluster is disconnected.",
+                kubectlOutput: nil,
+                diff: computeSecretDiff(original: secret.secretEntries, updated: entries)
+            )
+            return
+        }
+
+        let encodedData = Dictionary(uniqueKeysWithValues: entries.map { ($0.key, $0.encodedValueForSave()) })
+        let diff = computeSecretDiff(original: secret.secretEntries, updated: entries)
+        showBanner("Updating secret \(secret.name)…", style: .info)
+        do {
+            let output = try await clusterService.updateSecret(
+                contextName: cluster.contextName,
+                namespace: namespace.name,
+                name: secret.name,
+                type: secret.typeDescription,
+                encodedData: encodedData
+            )
+            applyOptimisticSecretUpdate(
+                clusterID: cluster.id,
+                namespaceName: namespace.name,
+                secretName: secret.name,
+                entries: entries
+            )
+            secretActionFeedback = SecretActionFeedback(
+                secretName: secret.name,
+                namespace: namespace.name,
+                status: .success,
+                message: "Secret \(secret.name) updated",
+                kubectlOutput: output.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty(),
+                diff: diff
+            )
+            invalidateCachedNodeData(for: cluster)
+            await refreshNamespace(clusterID: cluster.id, contextName: cluster.contextName, namespaceName: namespace.name)
+            showBanner("Secret \(secret.name) updated", style: .success)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+            secretActionFeedback = SecretActionFeedback(
+                secretName: secret.name,
+                namespace: namespace.name,
+                status: .failure,
+                message: message,
+                kubectlOutput: nil,
+                diff: diff
+            )
+        }
+    }
+
+    private func applyNamespaceManifest(
+        cluster: Cluster,
+        namespaceName: String,
+        yaml: String,
+        successMessage: String
+    ) async -> Result<String, AppModelError> {
+        guard cluster.isConnected else {
+            return .failure(AppModelError(message: "Connect to the cluster before applying manifests."))
+        }
+
+        let trimmed = yaml.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .failure(AppModelError(message: "Manifest is empty; add YAML before applying."))
+        }
+
+        showBanner("Applying manifest…", style: .info)
+        do {
+            let output = try await clusterService.applyResourceYAML(
+                contextName: cluster.contextName,
+                manifestYAML: yaml
+            )
+            await refreshNamespace(clusterID: cluster.id, contextName: cluster.contextName, namespaceName: namespaceName)
+            showBanner(successMessage, style: .success)
+            return .success(output)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+            showBanner("Failed to apply manifest", style: .warning)
+            return .failure(AppModelError(message: message))
+        }
+    }
+
+    func editWorkload(
+        cluster: Cluster,
+        namespace: Namespace,
+        workload: WorkloadSummary
+    ) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before editing workloads.")
+            return
+        }
+
+        guard let resource = workload.kind.kubectlResourceName else {
+            self.error = AppModelError(message: "Editing is not supported for \(workload.kind.displayName).")
+            return
+        }
+
+        let request = ResourceEditRequest(
+            contextName: cluster.contextName,
+            namespace: namespace.name,
+            kind: resource,
+            name: workload.name
+        )
+
+        do {
+            try await editService.editResource(request)
+            error = nil
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+        }
+    }
+
+    func scaleWorkload(
+        cluster: Cluster,
+        namespace: Namespace,
+        workload: WorkloadSummary,
+        replicas: Int
+    ) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before scaling workloads.")
+            return
+        }
+
+        guard workload.kind.supportsScaling, let resource = workload.kind.kubectlResourceName else {
+            self.error = AppModelError(message: "Scaling is not supported for \(workload.kind.displayName).")
+            return
+        }
+
+        let desiredReplicas = max(replicas, 0)
+        showBanner("Scaling \(workload.name)…", style: .info)
+        do {
+            try await runKubectl(arguments: [
+                "scale",
+                "\(resource)/\(workload.name)",
+                "--replicas",
+                "\(desiredReplicas)",
+                "-n",
+                namespace.name,
+                "--context",
+                cluster.contextName
+            ])
+            await refreshNamespace(clusterID: cluster.id, contextName: cluster.contextName, namespaceName: namespace.name)
+            showBanner("Scaled \(workload.name) to \(desiredReplicas) replicas", style: .success)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+        }
+    }
+
+    private func launchKubectlInTerminal(arguments: [String], extraEnv: [String: String] = [:]) {
+        do {
+            try KubectlDefaults.launchInTerminal(
+                kubeconfigPath: kubeconfigEnvValue ?? KubectlDefaults.defaultKubeconfigPath(),
+                arguments: arguments,
+                extraEnv: extraEnv
+            )
+            error = nil
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+        }
+    }
+
+    private func runKubectl(arguments: [String]) async throws {
+        let runner = KubectlRunner()
+        _ = try await runner.run(arguments: arguments, kubeconfigPath: kubeconfigEnvValue ?? KubectlDefaults.defaultKubeconfigPath())
+    }
+
+    private func invalidateCachedNodeData(for cluster: Cluster) {
+        if let service = clusterService as? KubectlClusterService {
+            service.invalidateNodeCache(contextName: cluster.contextName)
+        }
+    }
+
+    private func beginNodeAction(contextName: String, nodeName: String) -> String {
+        let key = nodeActionKey(contextName: contextName, nodeName: nodeName)
+        nodeActionsInProgress.insert(key)
+        nodeActionFeedback.removeValue(forKey: key)
+        return key
+    }
+
+    private func endNodeAction(key: String) {
+        nodeActionsInProgress.remove(key)
+    }
+
+    func isNodeActionInProgress(contextName: String, nodeName: String) -> Bool {
+        nodeActionsInProgress.contains(nodeActionKey(contextName: contextName, nodeName: nodeName))
+    }
+
+    func nodeActionError(contextName: String, nodeName: String) -> NodeActionFeedback? {
+        nodeActionFeedback[nodeActionKey(contextName: contextName, nodeName: nodeName)]
+    }
+
+    private func nodeActionKey(contextName: String, nodeName: String) -> String {
+        "\(contextName)|\(nodeName)"
+    }
+
+    private func showBanner(_ message: String, style: BannerMessage.Style) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            banner = BannerMessage(text: message, style: style)
+        }
+        let currentID = banner?.id
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            await MainActor.run {
+                guard let self, self.banner?.id == currentID else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    self.banner = nil
+                }
+            }
+        }
+    }
+
+    private func connectCluster(clusterID: Cluster.ID, contextName: String, preferredNamespace: String?) async {
+        do {
+            if let current = connectedClusterID, current != clusterID {
+                await disconnectCluster(clusterID: current)
+            }
+
+            stopClusterWatcher()
+            stopAllNamespaceWatchers()
+
+            KubectlDefaults.debug("Loading cluster details for \(contextName)")
+            var detailed = try await clusterService.loadClusterDetails(contextName: contextName, focusNamespace: preferredNamespace)
+            detailed.isConnected = true
+            replaceCluster(detailed)
+            connectedClusterID = detailed.id
+            selectedClusterID = detailed.id
+            if let pendingTab = pendingPreferredTab {
+                selectedResourceTab = pendingTab
+                pendingPreferredTab = nil
+            } else {
+                selectedResourceTab = .overview
+            }
+
+            startClusterWatcher(clusterID: detailed.id, contextName: contextName)
+            pendingPreferredContext = nil
+
+            await refreshHelmReleases(clusterID: detailed.id, contextName: contextName)
+
+            if let preferredNamespace {
+                KubectlDefaults.debug("Preferred namespace: \(preferredNamespace)")
+                if preferredNamespace == AppModel.allNamespacesPreferenceValue {
+                    selectedNamespaceID = AppModel.allNamespacesNamespaceID
+                    await ensureAllNamespacesLoaded(clusterID: detailed.id, contextName: contextName)
+                } else if let resolved = await loadNamespaceIfNeeded(clusterID: detailed.id, namespaceName: preferredNamespace) {
+                    selectedNamespaceID = resolved.id
+                } else if let namespace = detailed.namespaces.first(where: { $0.name == preferredNamespace }) {
+                    selectedNamespaceID = namespace.id
+                }
+                pendingPreferredNamespace = nil
+            } else if let first = detailed.namespaces.first {
+                if let resolved = await loadNamespaceIfNeeded(clusterID: detailed.id, namespaceName: first.name) {
+                    selectedNamespaceID = resolved.id
+                } else {
+                    selectedNamespaceID = first.id
+                }
+            }
+            KubectlDefaults.debug("Selected namespace id: \(selectedNamespaceID?.uuidString ?? "nil")")
+            error = nil
+            persistSelection()
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+            connectedClusterID = nil
+            selectedNamespaceID = nil
+            selectedResourceTab = .overview
+            updateClusterAfterFailedConnection(clusterID: clusterID, message: message)
+            persistSelection()
+        }
+    }
+
+    private func disconnectCluster(clusterID: Cluster.ID) async {
+        stopClusterWatcher()
+        stopAllNamespaceWatchers()
+        let forwards = activePortForwards
+        activePortForwards.removeAll()
+        for forward in forwards {
+            try? await portForwardService.stopForward(forward)
+        }
+
+        if let index = clusters.firstIndex(where: { $0.id == clusterID }) {
+            var cluster = clusters[index]
+            cluster.isConnected = false
+            cluster.namespaces = []
+            cluster.nodeSummary = NodeSummary(total: 0, ready: 0, cpuUsage: nil, memoryUsage: nil, diskUsage: nil, networkReceiveBytes: nil, networkTransmitBytes: nil)
+            cluster.nodes = []
+            cluster.helmReleases = []
+            clusters[index] = cluster
+        }
+        if connectedClusterID == clusterID {
+            connectedClusterID = nil
+        }
+        if let context = clusters.first(where: { $0.id == clusterID })?.contextName {
+            helmErrors[context] = nil
+        }
+        selectedNamespaceID = nil
+        selectedResourceTab = .overview
+        clearClusterMetrics(for: clusterID)
+        persistSelection()
+    }
+
+    private func replaceCluster(_ updated: Cluster) {
+        if let index = clusters.firstIndex(where: { $0.id == updated.id }) {
+            clusters[index] = updated
+        } else {
+            clusters.append(updated)
+        }
+    }
+
+    private func updateClusterAfterFailedConnection(clusterID: Cluster.ID, message: String) {
+        if let index = clusters.firstIndex(where: { $0.id == clusterID }) {
+            clusters[index].isConnected = false
+            clusters[index].namespaces = []
+            clusters[index].health = .unreachable
+            clusters[index].nodeSummary = NodeSummary(total: 0, ready: 0, cpuUsage: nil, memoryUsage: nil, diskUsage: nil, networkReceiveBytes: nil, networkTransmitBytes: nil)
+            clusters[index].nodes = []
+            clusters[index].notes = message
+        }
+        clearClusterMetrics(for: clusterID)
+    }
+
+    @discardableResult
+    func loadNamespaceIfNeeded(clusterID: Cluster.ID, namespaceName: String) async -> Namespace? {
+        guard let clusterIndex = clusters.firstIndex(where: { $0.id == clusterID }) else { return nil }
+        guard namespaceName != AppModel.allNamespacesDisplayName,
+              namespaceName != AppModel.allNamespacesPreferenceValue else { return nil }
+        let cluster = clusters[clusterIndex]
+        guard cluster.isConnected else { return nil }
+        guard let namespaceIndex = cluster.namespaces.firstIndex(where: { $0.name == namespaceName }) else { return nil }
+        var namespace = cluster.namespaces[namespaceIndex]
+        guard !namespace.isLoaded else { return namespace }
+
+        do {
+            KubectlDefaults.debug("Loading namespace \(namespaceName) for \(cluster.contextName)")
+            let detailed = try await clusterService.loadNamespaceDetails(contextName: cluster.contextName, namespace: namespaceName)
+            namespace.workloads = detailed.workloads
+            namespace.pods = detailed.pods
+            namespace.events = detailed.events
+            namespace.alerts = detailed.alerts
+            namespace.configResources = detailed.configResources
+            namespace.isLoaded = true
+            var updatedCluster = cluster
+            updatedCluster.namespaces[namespaceIndex] = namespace
+            if namespace.workloads.contains(where: { $0.status != .healthy }) {
+                updatedCluster.health = .degraded
+            }
+            clusters[clusterIndex] = updatedCluster
+            startNamespaceWatcher(clusterID: cluster.id, contextName: cluster.contextName, namespaceName: namespaceName)
+            KubectlDefaults.debug("Namespace \(namespaceName) loaded: workloads=\(namespace.workloads.count) pods=\(namespace.pods.count) events=\(namespace.events.count)")
+            persistSelection()
+            return namespace
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+            var updatedCluster = cluster
+            updatedCluster.notes = message
+            clusters[clusterIndex] = updatedCluster
+            KubectlDefaults.debug("Namespace \(namespaceName) failed: \(message)")
+            return nil
+        }
+    }
+
+    private func validateKubeconfig(path: String?) async throws {
+        let runner = KubectlRunner()
+        _ = try await runner.run(arguments: ["config", "view", "-o", "json"], kubeconfigPath: path)
+    }
+
+    private func rebuildServices(with paths: [String]) {
+        stopClusterWatcher()
+        stopAllNamespaceWatchers()
+        activePortForwards.removeAll()
+        clusters = []
+        connectedClusterID = nil
+        selectedClusterID = nil
+        selectedNamespaceID = nil
+        selectedResourceTab = .overview
+        clusterMetricsHistory.removeAll()
+        clusterOverviewMetrics.removeAll()
+
+        let joinedPath = AppModel.joinedKubeconfigPath(for: paths)
+
+        if let service = clusterService as? KubectlClusterService {
+            clusterService = service.withKubeconfig(joinedPath)
+        }
+        if let service = logService as? KubectlLogStreamingService {
+            logService = service.withKubeconfig(joinedPath)
+        }
+        if let service = execService as? KubectlExecService {
+            execService = service.withKubeconfig(joinedPath)
+        }
+        if portForwardService is KubectlPortForwardService {
+            portForwardService = KubectlPortForwardService(kubeconfigPath: joinedPath ?? KubectlDefaults.defaultKubeconfigPath())
+        }
+        if let service = editService as? KubectlEditService {
+            editService = service.withKubeconfig(joinedPath)
+        }
+    }
+
+    private func persistSelection() {
+        if isRestoringPreferences { return }
+
+        let defaults = UserDefaults.standard
+        if let context = selectedCluster?.contextName {
+            defaults.set(context, forKey: PreferenceKeys.selectedContext)
+        } else {
+            defaults.removeObject(forKey: PreferenceKeys.selectedContext)
+        }
+
+        if let namespace = selectedNamespace?.name {
+            if selectedNamespaceID == AppModel.allNamespacesNamespaceID {
+                defaults.set(AppModel.allNamespacesPreferenceValue, forKey: PreferenceKeys.selectedNamespace)
+            } else {
+                defaults.set(namespace, forKey: PreferenceKeys.selectedNamespace)
+            }
+        } else {
+            defaults.removeObject(forKey: PreferenceKeys.selectedNamespace)
+        }
+
+        if let connected = connectedCluster?.contextName {
+            defaults.set(connected, forKey: PreferenceKeys.connectedContext)
+        } else {
+            defaults.removeObject(forKey: PreferenceKeys.connectedContext)
+        }
+
+        defaults.set(selectedResourceTab.preferenceValue, forKey: PreferenceKeys.selectedTab)
+    }
+
+    private func persistKubeconfigSources(_ paths: [String]) {
+        let defaults = UserDefaults.standard
+        if let data = try? JSONEncoder().encode(paths) {
+            defaults.set(data, forKey: PreferenceKeys.kubeconfigSources)
+        }
+        defaults.removeObject(forKey: PreferenceKeys.kubeconfigPath)
+    }
+
+    private func clearSelectionPreferences() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: PreferenceKeys.selectedContext)
+        defaults.removeObject(forKey: PreferenceKeys.selectedNamespace)
+        defaults.removeObject(forKey: PreferenceKeys.connectedContext)
+        defaults.removeObject(forKey: PreferenceKeys.selectedTab)
+    }
+
+    func reloadHelmReleases(for cluster: Cluster) async {
+        await refreshHelmReleases(clusterID: cluster.id, contextName: cluster.contextName)
+    }
+
+    private func refreshHelmReleases(clusterID: Cluster.ID, contextName: String) async {
+        helmLoadingContexts.insert(contextName)
+        defer { helmLoadingContexts.remove(contextName) }
+        do {
+            let releases = try await helmService.listReleases(contextName: contextName)
+            applyHelmReleases(clusterID: clusterID, releases: releases)
+            helmErrors[contextName] = nil
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            helmErrors[contextName] = message
+        }
+    }
+
+    private func sanitizeErrorMessage(_ raw: String) -> String {
+        let lines = raw
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var seen = Set<String>()
+        var unique: [String] = []
+        for line in lines {
+            if seen.insert(line).inserted {
+                unique.append(line)
+            }
+        }
+
+        let normalized = unique.joined(separator: "\n")
+
+        if normalized.contains("gke-gcloud-auth-plugin not found") {
+            return "Google Kubernetes Engine credential plugin missing. Install via 'gcloud components install gke-gcloud-auth-plugin' and rerun connect.\n" + normalized
+        }
+
+        if normalized.contains("executable gcloud") {
+            return "gcloud executable not found. Ensure Google Cloud SDK is installed and available in PATH.\n" + normalized
+        }
+
+        let lowercased = normalized.lowercased()
+
+        if lowercased.contains("forbidden") || (lowercased.contains(" cannot ") && lowercased.contains(" resource")) {
+            return "Access denied by Kubernetes RBAC. Verify your role bindings or request the required permissions before retrying.\n" + normalized
+        }
+
+        if lowercased.contains("unauthorized") || lowercased.contains("authentication") || lowercased.contains("expired token") {
+            return "Authentication failed. Refresh your Kubernetes credentials or log in again, then retry the action.\n" + normalized
+        }
+
+        return normalized.isEmpty ? raw : normalized
+    }
+
+    private func applyOptimisticSecretUpdate(
+        clusterID: Cluster.ID,
+        namespaceName: String,
+        secretName: String,
+        entries: [SecretEntryEditor]
+    ) {
+        guard let clusterIndex = clusters.firstIndex(where: { $0.id == clusterID }) else { return }
+        var cluster = clusters[clusterIndex]
+        guard let namespaceIndex = cluster.namespaces.firstIndex(where: { $0.name == namespaceName }) else { return }
+
+        var namespace = cluster.namespaces[namespaceIndex]
+        guard let secretIndex = namespace.configResources.firstIndex(where: { $0.kind == .secret && $0.name == secretName }) else { return }
+
+        var summary = namespace.configResources[secretIndex]
+        let updatedEntries = entries
+            .map { SecretDataEntry(key: $0.key, encodedValue: $0.encodedValueForSave()) }
+            .sorted { $0.key < $1.key }
+        summary.secretEntries = updatedEntries
+        summary.dataCount = updatedEntries.count
+        namespace.configResources[secretIndex] = summary
+        cluster.namespaces[namespaceIndex] = namespace
+        clusters[clusterIndex] = cluster
+    }
+
+    private func computeSecretDiff(
+        original: [SecretDataEntry]?,
+        updated: [SecretEntryEditor]
+    ) -> [SecretDiffSummary] {
+        SecretDiffSummary.compute(original: original, updated: updated)
+    }
+
+    private func stopClusterWatcher() {
+        clusterRefreshTask?.cancel()
+        clusterRefreshTask = nil
+    }
+
+    private func stopAllNamespaceWatchers() {
+        for task in namespaceRefreshTasks.values {
+            task.cancel()
+        }
+        namespaceRefreshTasks.removeAll()
+    }
+
+    private func startClusterWatcher(clusterID: Cluster.ID, contextName: String) {
+        clusterRefreshTask?.cancel()
+        clusterRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.clusterWatcherLoop(clusterID: clusterID, contextName: contextName)
+        }
+    }
+
+    @MainActor
+    private func clusterWatcherLoop(clusterID: Cluster.ID, contextName: String) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: clusterRefreshIntervalNanoseconds)
+            } catch {
+                break
+            }
+            if Task.isCancelled { break }
+            await updateClusterSnapshot(clusterID: clusterID, contextName: contextName)
+        }
+    }
+
+    @MainActor
+    private func updateClusterSnapshot(clusterID: Cluster.ID, contextName: String) async {
+        do {
+            let detailed = try await clusterService.loadClusterDetails(contextName: contextName, focusNamespace: selectedNamespace?.name)
+            mergeConnectedCluster(clusterID: clusterID, updatedCluster: detailed)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            if let index = clusters.firstIndex(where: { $0.id == clusterID }) {
+                clusters[index].notes = message
+                clusters[index].health = .degraded
+            }
+            if self.error == nil {
+                self.error = AppModelError(message: message)
+            }
+        }
+    }
+
+    private func startNamespaceWatcher(clusterID: Cluster.ID, contextName: String, namespaceName: String) {
+        namespaceRefreshTasks[namespaceName]?.cancel()
+        namespaceRefreshTasks[namespaceName] = Task { [weak self] in
+            guard let self else { return }
+            await self.namespaceWatcherLoop(clusterID: clusterID, contextName: contextName, namespaceName: namespaceName)
+        }
+    }
+
+    @MainActor
+    private func namespaceWatcherLoop(clusterID: Cluster.ID, contextName: String, namespaceName: String) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: namespaceRefreshIntervalNanoseconds)
+            } catch {
+                break
+            }
+            if Task.isCancelled { break }
+            await refreshNamespace(clusterID: clusterID, contextName: contextName, namespaceName: namespaceName)
+        }
+    }
+
+    @MainActor
+    private func refreshNamespace(clusterID: Cluster.ID, contextName: String, namespaceName: String) async {
+        guard let cluster = clusters.first(where: { $0.id == clusterID }), cluster.isConnected else { return }
+        do {
+            let detailed = try await clusterService.loadNamespaceDetails(contextName: contextName, namespace: namespaceName)
+            applyNamespaceDetails(clusterID: clusterID, namespaceDetail: detailed)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            if self.error == nil {
+                self.error = AppModelError(message: message)
+            }
+        }
+    }
+
+    @MainActor
+    private func mergeConnectedCluster(clusterID: Cluster.ID, updatedCluster: Cluster) {
+        guard let index = clusters.firstIndex(where: { $0.id == clusterID }) else { return }
+        let existing = clusters[index]
+        var merged = updatedCluster
+
+        let existingNamespaces = Dictionary(uniqueKeysWithValues: existing.namespaces.map { ($0.name, $0) })
+        merged.namespaces = merged.namespaces.map { namespace in
+            guard let existingNamespace = existingNamespaces[namespace.name] else { return namespace }
+            let shouldReuseExistingData = !namespace.isLoaded && existingNamespace.isLoaded
+            return Namespace(
+                id: existingNamespace.id,
+                name: namespace.name,
+                workloads: shouldReuseExistingData ? existingNamespace.workloads : namespace.workloads,
+                pods: shouldReuseExistingData ? existingNamespace.pods : namespace.pods,
+                events: shouldReuseExistingData ? existingNamespace.events : namespace.events,
+                alerts: shouldReuseExistingData ? existingNamespace.alerts : namespace.alerts,
+                configResources: shouldReuseExistingData ? existingNamespace.configResources : namespace.configResources,
+                services: shouldReuseExistingData ? existingNamespace.services : namespace.services,
+                ingresses: shouldReuseExistingData ? existingNamespace.ingresses : namespace.ingresses,
+                persistentVolumeClaims: shouldReuseExistingData ? existingNamespace.persistentVolumeClaims : namespace.persistentVolumeClaims,
+                serviceAccounts: shouldReuseExistingData ? existingNamespace.serviceAccounts : namespace.serviceAccounts,
+                roles: shouldReuseExistingData ? existingNamespace.roles : namespace.roles,
+                roleBindings: shouldReuseExistingData ? existingNamespace.roleBindings : namespace.roleBindings,
+                isLoaded: namespace.isLoaded || existingNamespace.isLoaded
+            )
+        }
+
+        if merged.notes == nil {
+            merged.notes = existing.notes
+        }
+
+        if merged.nodes.isEmpty, !existing.nodes.isEmpty {
+            merged.nodes = existing.nodes
+        }
+
+        if merged.helmReleases.isEmpty, !existing.helmReleases.isEmpty {
+            merged.helmReleases = existing.helmReleases
+        }
+
+        if merged.customResources.isEmpty, !existing.customResources.isEmpty {
+            merged.customResources = existing.customResources
+        }
+
+        merged.isConnected = true
+        merged.lastSynced = Date()
+        clusters[index] = merged
+        recordMetricsSample(for: clusterID, cluster: merged)
+    }
+
+    private func recordMetricsSample(for clusterID: Cluster.ID, cluster: Cluster) {
+        let timestamp = cluster.lastSynced
+        var history = clusterMetricsHistory[clusterID] ?? ClusterMetricHistory()
+
+        func append(_ series: inout [MetricPoint], value: Double?) {
+            guard let value else { return }
+            series.append(MetricPoint(timestamp: timestamp, value: value))
+            if series.count > metricsSampleLimit {
+                series.removeFirst(series.count - metricsSampleLimit)
+            }
+        }
+
+        append(&history.cpuPoints, value: clampRatio(cluster.nodeSummary.cpuUsage))
+        append(&history.memoryPoints, value: clampRatio(cluster.nodeSummary.memoryUsage))
+        append(&history.diskPoints, value: clampRatio(cluster.nodeSummary.diskUsage))
+
+        if let rx = cluster.nodeSummary.networkReceiveBytes,
+           let tx = cluster.nodeSummary.networkTransmitBytes {
+            if let last = history.lastNetworkTotals {
+                let deltaRx = max(rx - last.rxBytes, 0)
+                let deltaTx = max(tx - last.txBytes, 0)
+                let interval = timestamp.timeIntervalSince(last.timestamp)
+                if interval > 0 {
+                    let rate = (deltaRx + deltaTx) / interval
+                    append(&history.networkPoints, value: rate)
+                }
+            }
+            history.lastNetworkTotals = NetworkTotals(rxBytes: rx, txBytes: tx, timestamp: timestamp)
+        }
+
+        history.nodeHeatmap = buildNodeHeatmap(from: cluster)
+        history.podHeatmap = buildPodHeatmap(from: cluster)
+        clusterMetricsHistory[clusterID] = history
+
+        clusterOverviewMetrics[clusterID] = ClusterOverviewMetrics(
+            timestamp: timestamp,
+            cpu: MetricSeries(points: history.cpuPoints),
+            memory: MetricSeries(points: history.memoryPoints),
+            disk: MetricSeries(points: history.diskPoints),
+            network: MetricSeries(points: history.networkPoints),
+            nodeHeatmap: history.nodeHeatmap,
+            podHeatmap: history.podHeatmap
+        )
+
+        recordWorkloadHistory(for: clusterID, cluster: cluster, timestamp: timestamp)
+    }
+
+    private func recordWorkloadHistory(for clusterID: Cluster.ID, cluster: Cluster, timestamp: Date) {
+        var store = workloadRolloutHistory[clusterID] ?? [:]
+
+        func appendSample(_ series: inout [MetricPoint], replicas: Int?) {
+            guard let replicas else { return }
+            let value = Double(replicas)
+            if let last = series.last, abs(last.timestamp.timeIntervalSince(timestamp)) < 0.5 {
+                series[series.count - 1] = MetricPoint(id: last.id, timestamp: timestamp, value: value)
+            } else {
+                series.append(MetricPoint(timestamp: timestamp, value: value))
+                if series.count > metricsSampleLimit {
+                    series.removeFirst(series.count - metricsSampleLimit)
+                }
+            }
+        }
+
+        for namespace in cluster.namespaces where namespace.isLoaded {
+            for workload in namespace.workloads {
+                let key = WorkloadHistoryKey(namespace: namespace.name, name: workload.name, kind: workload.kind)
+                var series = store[key] ?? WorkloadRolloutSeries()
+                appendSample(&series.ready, replicas: workload.readyReplicas)
+                appendSample(&series.updated, replicas: workload.updatedReplicas)
+                appendSample(&series.available, replicas: workload.availableReplicas)
+                store[key] = series
+            }
+        }
+
+        workloadRolloutHistory[clusterID] = store
+    }
+
+    private func buildNodeHeatmap(from cluster: Cluster) -> [HeatmapEntry] {
+        let entries = cluster.nodes.compactMap { node -> HeatmapEntry? in
+            let cpu = clampRatio(node.cpuUsageRatio)
+            let memory = clampRatio(node.memoryUsageRatio)
+            guard cpu != nil || memory != nil else { return nil }
+            return HeatmapEntry(
+                key: "node:\(node.name)",
+                label: node.name,
+                cpuRatio: cpu,
+                memoryRatio: memory
+            )
+        }
+        return Array(entries
+            .sorted(by: { ($0.cpuRatio ?? 0) > ($1.cpuRatio ?? 0) })
+            .prefix(12))
+    }
+
+    private func buildPodHeatmap(from cluster: Cluster) -> [HeatmapEntry] {
+        let pods = cluster.namespaces.flatMap { namespace in
+            namespace.pods.map { (namespace.name, $0) }
+        }
+        let entries = pods.compactMap { namespace, pod -> HeatmapEntry? in
+            let cpu = clampRatio(pod.cpuUsageRatio)
+            let memory = clampRatio(pod.memoryUsageRatio)
+            guard cpu != nil || memory != nil else { return nil }
+            return HeatmapEntry(
+                key: "pod:\(namespace)/\(pod.name)",
+                label: "\(namespace)/\(pod.name)",
+                cpuRatio: cpu,
+                memoryRatio: memory
+            )
+        }
+        return Array(entries
+            .sorted(by: { ($0.cpuRatio ?? 0) > ($1.cpuRatio ?? 0) })
+            .prefix(12))
+    }
+
+    private func clearClusterMetrics(for clusterID: Cluster.ID) {
+        clusterMetricsHistory.removeValue(forKey: clusterID)
+        clusterOverviewMetrics.removeValue(forKey: clusterID)
+    }
+
+    private func clampRatio(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return min(max(value, 0), 1)
+    }
+
+    private func fetchResourceYAML(contextName: String, namespace: String?, resourceType: String, name: String) async -> Result<String, AppModelError> {
+        do {
+            let yaml = try await clusterService.loadResourceYAML(
+                contextName: contextName,
+                namespace: namespace,
+                resourceType: resourceType,
+                name: name
+            )
+            return .success(yaml)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            return .failure(AppModelError(message: message))
+        }
+    }
+
+    @MainActor
+    private func applyNamespaceDetails(clusterID: Cluster.ID, namespaceDetail: Namespace) {
+        guard let clusterIndex = clusters.firstIndex(where: { $0.id == clusterID }) else { return }
+        var cluster = clusters[clusterIndex]
+        guard cluster.isConnected else { return }
+        guard let namespaceIndex = cluster.namespaces.firstIndex(where: { $0.name == namespaceDetail.name }) else { return }
+
+        var namespace = cluster.namespaces[namespaceIndex]
+        namespace.workloads = namespaceDetail.workloads
+        namespace.pods = namespaceDetail.pods
+        namespace.events = namespaceDetail.events
+        namespace.alerts = namespaceDetail.alerts
+        namespace.configResources = namespaceDetail.configResources
+        namespace.services = namespaceDetail.services
+        namespace.ingresses = namespaceDetail.ingresses
+        namespace.persistentVolumeClaims = namespaceDetail.persistentVolumeClaims
+        namespace.serviceAccounts = namespaceDetail.serviceAccounts
+        namespace.roles = namespaceDetail.roles
+        namespace.roleBindings = namespaceDetail.roleBindings
+        namespace.isLoaded = true
+
+        cluster.namespaces[namespaceIndex] = namespace
+        if namespace.workloads.contains(where: { $0.status != .healthy }) {
+            cluster.health = .degraded
+        }
+        cluster.lastSynced = Date()
+        clusters[clusterIndex] = cluster
+        persistSelection()
+    }
+
+    private func applyHelmReleases(clusterID: Cluster.ID, releases: [HelmRelease]) {
+        guard let index = clusters.firstIndex(where: { $0.id == clusterID }) else { return }
+        clusters[index].helmReleases = releases
+    }
+
+
+    static var preview: AppModel {
+#if DEBUG
+        let model = AppModel(
+            clusterService: MockClusterService(),
+            logService: MockLogStreamingService(),
+            execService: MockExecService(),
+            portForwardService: MockPortForwardService(),
+            editService: MockEditService(),
+            helmService: MockHelmService(releases: [])
+        )
+#else
+        let model = AppModel()
+#endif
+        model.clusters = MockClusterService.sampleClusters
+        model.selectedClusterID = model.clusters.first?.id
+        model.selectedNamespaceID = model.clusters.first?.namespaces.first?.id
+        model.connectedClusterID = model.clusters.first?.id
+        if !model.clusters.isEmpty {
+            model.clusters[0].helmReleases = [
+                HelmRelease(name: "nginx", namespace: "default", revision: 3, status: "deployed", chart: "nginx-4.0.3", appVersion: "1.16.0", updated: Date().addingTimeInterval(-7200)),
+                HelmRelease(name: "loki", namespace: "observability", revision: 5, status: "deployed", chart: "loki-stack-2.9.0", appVersion: "2.8.2", updated: Date().addingTimeInterval(-18_000))
+            ]
+        }
+        if let cluster = model.selectedCluster {
+            model.activePortForwards = [
+                ActivePortForward(
+                    id: UUID(),
+                    request: PortForwardRequest(
+                        clusterID: cluster.id,
+                        contextName: cluster.contextName,
+                        namespace: "production",
+                        podName: "checkout-service-0ddf7",
+                        remotePort: 443,
+                        localPort: 8443
+                    ),
+                    startedAt: Date(),
+                    status: .active
+                )
+            ]
+        }
+        return model
+    }
+}
+
+struct AppModelError: Identifiable, LocalizedError {
+    let id = UUID()
+    let message: String
+
+    var errorDescription: String? { message }
+}
+
+struct BannerMessage: Identifiable {
+    enum Style {
+        case info
+        case success
+        case warning
+
+        var tint: Color {
+            switch self {
+            case .info: return .blue
+            case .success: return .green
+            case .warning: return .orange
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .info: return "info.circle"
+            case .success: return "checkmark.circle"
+            case .warning: return "exclamationmark.triangle"
+            }
+        }
+    }
+
+    let id = UUID()
+    var text: String
+    var style: Style
+}
+
+struct SecretActionFeedback: Identifiable {
+    enum Status {
+        case success
+        case failure
+    }
+
+    let id = UUID()
+    let secretName: String
+    let namespace: String
+    let status: Status
+    let message: String
+    let kubectlOutput: String?
+    let diff: [SecretDiffSummary]
+    let timestamp: Date = Date()
+}
+
+struct NodeActionFeedback: Identifiable {
+    let id = UUID()
+    let contextName: String
+    let nodeName: String
+    let message: String
+    let timestamp: Date = Date()
+}
+
+private extension String {
+    func nilIfEmpty() -> String? {
+        trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
+    }
+}
+
+private extension KubectlClusterService {
+    func withKubeconfig(_ path: String?) -> KubectlClusterService {
+        KubectlClusterService(kubeconfigPath: path ?? KubectlDefaults.defaultKubeconfigPath())
+    }
+}
+
+private extension KubectlLogStreamingService {
+    func withKubeconfig(_ path: String?) -> KubectlLogStreamingService {
+        KubectlLogStreamingService(kubeconfigPath: path ?? KubectlDefaults.defaultKubeconfigPath())
+    }
+}
+
+private extension KubectlExecService {
+    func withKubeconfig(_ path: String?) -> KubectlExecService {
+        KubectlExecService(kubeconfigPath: path ?? KubectlDefaults.defaultKubeconfigPath())
+    }
+}
+
+private extension KubectlEditService {
+    func withKubeconfig(_ path: String?) -> KubectlEditService {
+        KubectlEditService(kubeconfigPath: path ?? KubectlDefaults.defaultKubeconfigPath())
+    }
+}

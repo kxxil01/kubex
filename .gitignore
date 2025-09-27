@@ -1,0 +1,44 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.pins
+Package.resolved
+
+# Xcode
+DerivedData/
+*.xcworkspace
+xcuserdata/
+*.xcuserdatad
+*.xccheckout
+*.xcscmblueprint
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Logs & runtime
+*.log
+log/
+log/*.log
+sessions/
+
+# Credentials and kubeconfigs (managed locally)
+auth.json
+kubeconfig_*
+
+# Archives / bundles
+*.zip
+*.tar.gz
+*.tgz
+
+# Build artifacts
+Kubex.app
+Kubex.dSYM
+build/
+
+# Temporary files
+*.swp
+*.tmp
+*.orig
