@@ -15,6 +15,13 @@ protocol ClusterService {
         type: String?,
         encodedData: [String: String]
     ) async throws -> String
+    func updateConfigMap(
+        contextName: String,
+        namespace: String,
+        name: String,
+        data: [String: String],
+        binaryData: [String: String]
+    ) async throws -> String
 }
 
 @MainActor
@@ -446,6 +453,17 @@ final class MockClusterService: ClusterService {
         encodedData: [String: String]
     ) async throws -> String {
         _ = (contextName, namespace, name, type, encodedData)
+        return "mock apply"
+    }
+
+    func updateConfigMap(
+        contextName: String,
+        namespace: String,
+        name: String,
+        data: [String: String],
+        binaryData: [String: String]
+    ) async throws -> String {
+        _ = (contextName, namespace, name, data, binaryData)
         return "mock apply"
     }
 

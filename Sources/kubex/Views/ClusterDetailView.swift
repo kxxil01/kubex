@@ -330,8 +330,12 @@ struct ClusterDetailView: View {
     @State private var workloadInspectorTab: WorkloadInspectorTab = .summary
     @State private var nodeSortOption: NodeSortOption = .default
     @State private var workloadSortOption: WorkloadSortOption = .default
+    @State private var inspectorWidth: CGFloat = 360
+    @State private var inspectorDragBaseline: CGFloat?
 
     private var isConnected: Bool { cluster.isConnected }
+    private let inspectorMinimumWidth: CGFloat = 320
+    private let inspectorMaximumWidth: CGFloat = 600
 
     private var inspectorSelectionForCluster: AppModel.InspectorSelection {
         switch model.inspectorSelection {
@@ -375,7 +379,7 @@ struct ClusterDetailView: View {
     }
 
     private var inspectorInset: CGFloat {
-        inspectorSelectionForCluster == .none ? 0 : 280
+        inspectorSelectionForCluster == .none ? 0 : inspectorWidth + 48
     }
 
     var body: some View {
@@ -389,7 +393,7 @@ struct ClusterDetailView: View {
 
             HStack(spacing: 0) {
                 NavigationSidebar(selectedTab: $selectedTab, isConnected: isConnected)
-                    .frame(width: 220)
+                    .frame(width: 200)
 
                 Divider()
 
@@ -760,29 +764,60 @@ struct ClusterDetailView: View {
     private var inspectorOverlay: some View {
         let selection = inspectorSelectionForCluster
         if cluster.isConnected, selection != .none {
-            ResourceInspector(
-                cluster: cluster,
-                namespace: namespace,
-                selectedTab: selectedTab,
-                networkFocus: networkResourceFocus,
-                onFocusPods: { focusPods(for: $0) },
-                podActions: PodInspectorActions(
-                    onPortForward: { handlePortForward($0) },
-                    onEvict: { handleEvict($0) },
-                    onDelete: { handleDelete($0) }
-                ),
-                podTabSelection: $podInspectorTab,
-                workloadTabSelection: $workloadInspectorTab,
-                selection: selection
-            )
-            .environmentObject(model)
-            .frame(width: 420)
-            .padding(16)
+            HStack(spacing: 0) {
+                inspectorResizeHandle
+                ResourceInspector(
+                    cluster: cluster,
+                    namespace: namespace,
+                    selectedTab: selectedTab,
+                    networkFocus: networkResourceFocus,
+                    onFocusPods: { focusPods(for: $0) },
+                    podActions: PodInspectorActions(
+                        onPortForward: { handlePortForward($0) },
+                        onEvict: { handleEvict($0) },
+                        onDelete: { handleDelete($0) }
+                    ),
+                    podTabSelection: $podInspectorTab,
+                    workloadTabSelection: $workloadInspectorTab,
+                    selection: selection
+                )
+                .environmentObject(model)
+                .frame(width: inspectorWidth)
+            }
+            .padding(.vertical, 16)
+            .padding(.horizontal, 16)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .shadow(color: Color.black.opacity(0.2), radius: 12, x: 0, y: 6)
             .padding(.trailing, 24)
             .padding(.bottom, 24)
         }
+    }
+
+    private var inspectorResizeHandle: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 12)
+            .overlay(
+                Capsule()
+                    .fill(Color.secondary.opacity(0.35))
+                    .frame(width: 4)
+            )
+            .padding(.vertical, 16)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if inspectorDragBaseline == nil {
+                            inspectorDragBaseline = inspectorWidth
+                        }
+                        let baseline = inspectorDragBaseline ?? inspectorWidth
+                        let proposed = baseline - value.translation.width
+                        inspectorWidth = min(max(proposed, inspectorMinimumWidth), inspectorMaximumWidth)
+                    }
+                    .onEnded { _ in
+                        inspectorDragBaseline = nil
+                    }
+            )
     }
 
 private struct PodInspectorActions {
@@ -3931,6 +3966,251 @@ private struct SecretDetailSheet: View {
     }
 }
 
+private struct ConfigMapDetailSheet: View {
+    let cluster: Cluster
+    let namespace: Namespace
+    let configMap: ConfigResourceSummary
+
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var editors: [ConfigMapEntryEditor]
+    @State private var isSaving = false
+
+    private var canEditConfigMap: Bool { configMap.permissions.canEdit }
+    private var pendingDiffs: [ConfigMapDiffSummary] { ConfigMapDiffSummary.compute(original: configMap.configMapEntries, updated: editors) }
+    private var hasPendingChanges: Bool { !pendingDiffs.isEmpty }
+    private var actionFeedback: ConfigMapActionFeedback? {
+        guard let feedback = model.configMapActionFeedback,
+              feedback.configMapName == configMap.name,
+              feedback.namespace == namespace.name else { return nil }
+        return feedback
+    }
+
+    init(cluster: Cluster, namespace: Namespace, configMap: ConfigResourceSummary) {
+        self.cluster = cluster
+        self.namespace = namespace
+        self.configMap = configMap
+        _editors = State(initialValue: configMap.configMapEntries?.map { ConfigMapEntryEditor(entry: $0) } ?? [])
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            header
+            Divider()
+            permissionBanner
+
+            if editors.isEmpty {
+                ContentUnavailableView(
+                    "No Data",
+                    systemImage: "doc.text",
+                    description: Text("This ConfigMap does not contain any key/value pairs.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach($editors) { $entry in
+                            ConfigMapEntryEditorView(entry: $entry, canEdit: canEditConfigMap)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            if canEditConfigMap {
+                diffPreview
+            }
+
+            if let actionFeedback {
+                configMapFeedbackPanel(actionFeedback)
+            }
+
+            Divider()
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                Button("Save") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isSaving || !canEditConfigMap || !hasPendingChanges)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 600, minHeight: 420)
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("ConfigMap · \(configMap.name)")
+                    .font(.title3.bold())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("Namespace \(namespace.name)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Close") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+        }
+    }
+
+    private func save() {
+        guard !isSaving, canEditConfigMap, hasPendingChanges else { return }
+        isSaving = true
+        Task { @MainActor in
+            await model.updateConfigMap(
+                cluster: cluster,
+                namespace: namespace,
+                configMap: configMap,
+                entries: editors
+            )
+            isSaving = false
+            if model.error == nil {
+                dismiss()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var permissionBanner: some View {
+        if !canEditConfigMap {
+            Label("Editing is disabled by Kubernetes RBAC for your account.", systemImage: "hand.raised")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var diffPreview: some View {
+        if pendingDiffs.isEmpty { EmptyView() } else {
+            SectionBox(title: "Pending Changes") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(pendingDiffs) { diff in
+                        HStack(spacing: 8) {
+                            badge(for: diff.kind)
+                            Text(diff.key)
+                                .font(.caption.bold())
+                            Spacer()
+                        }
+                        if diff.kind != .removed {
+                            DiffRow(before: diff.before ?? "", after: diff.after ?? "", isBase64: diff.isBinary)
+                        } else {
+                            DiffRow(before: diff.before ?? "", after: "", isBase64: diff.isBinary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func badge(for kind: ConfigMapDiffSummary.ChangeKind) -> some View {
+        let text: String
+        let color: Color
+        switch kind {
+        case .added:
+            text = "Added"
+            color = .green
+        case .removed:
+            text = "Removed"
+            color = .red
+        case .modified:
+            text = "Edited"
+            color = .blue
+        }
+        return Text(text)
+            .font(.caption.bold())
+            .foregroundStyle(color)
+    }
+
+    private func configMapFeedbackPanel(_ feedback: ConfigMapActionFeedback) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: feedback.status == .success ? "checkmark.circle" : "exclamationmark.triangle")
+                    .foregroundStyle(feedback.status == .success ? Color.green : Color.orange)
+                Text(feedback.message)
+                    .font(.subheadline)
+                Spacer()
+                Text(feedback.timestamp, style: .time)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let output = feedback.kubectlOutput, !output.isEmpty {
+                Text(output)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.gray.opacity(0.2))
+        )
+    }
+}
+
+private struct ConfigMapEntryEditorView: View {
+    @Binding var entry: ConfigMapEntryEditor
+    let canEdit: Bool
+
+    private var isEditable: Bool {
+        canEdit && entry.isEditable
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(entry.key)
+                    .font(.headline)
+                Spacer()
+                if entry.isBinary {
+                    Text("Binary (base64)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if !canEdit {
+                    Text("Read-only")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if entry.isBinary || !isEditable {
+                ScrollView {
+                    Text(entry.value)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 100)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.gray.opacity(0.2))
+                )
+            } else {
+                TextEditor(text: Binding(
+                    get: { entry.value },
+                    set: { entry.updateValue($0) }
+                ))
+                .font(.system(.body, design: .monospaced))
+                .frame(minHeight: 120)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.gray.opacity(0.2))
+                )
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.gray.opacity(0.15))
+        )
+    }
+}
+
+
 private struct SecretEntryEditorView: View {
     @Binding var entry: SecretEntryEditor
     let canReveal: Bool
@@ -4273,7 +4553,8 @@ private struct OverviewSection: View {
                     systemImage: "waveform.path.ecg",
                     description: Text("Connect to Prometheus or metrics-server to visualize live trends.")
                 )
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 220)
             }
         }
     }
@@ -5070,6 +5351,10 @@ private struct PodListView: View {
             FixedTableColumn("Phase", width: PodColumnWidth.status) { pod in
                 Text(pod.phase.displayName)
                     .foregroundStyle(pod.phase.tint)
+            },
+            FixedTableColumn("Age", width: PodColumnWidth.age) { pod in
+                Text(pod.ageDisplay)
+                    .foregroundStyle(.secondary)
             },
             FixedTableColumn("", width: PodColumnWidth.actions, alignment: .trailing) { pod in
                 Menu {
@@ -6201,6 +6486,7 @@ private struct ConfigSection: View {
     let isConnected: Bool
     @EnvironmentObject private var model: AppModel
     @State private var selectedSecret: ConfigResourceSummary?
+    @State private var selectedConfigMap: ConfigResourceSummary?
 
     var body: some View {
         Group {
@@ -6235,8 +6521,15 @@ private struct ConfigSection: View {
                     } else {
                         ConfigResourceGroupsView(
                             resources: namespace.configResources,
-                            onOpenSecret: { resource in
-                                selectedSecret = resource
+                            onOpenResource: { resource in
+                                switch resource.kind {
+                                case .secret:
+                                    selectedSecret = resource
+                                case .configMap:
+                                    selectedConfigMap = resource
+                                default:
+                                    break
+                                }
                             }
                         )
                     }
@@ -6256,6 +6549,19 @@ private struct ConfigSection: View {
                 .environmentObject(model)
             } else {
                 Text("Secret details unavailable without namespace context.")
+                    .padding()
+            }
+        }
+        .sheet(item: $selectedConfigMap) { configMap in
+            if let namespace {
+                ConfigMapDetailSheet(
+                    cluster: cluster,
+                    namespace: namespace,
+                    configMap: configMap
+                )
+                .environmentObject(model)
+            } else {
+                Text("ConfigMap details unavailable without namespace context.")
                     .padding()
             }
         }
@@ -6780,7 +7086,12 @@ private struct FixedColumnTable<Row: Identifiable>: View {
     var rowBackground: ((Row, Bool) -> Color?)? = nil
 
     private var minimumHeight: CGFloat {
-        CGFloat(max(rows.count, 1)) * minimumRowHeight + 48
+        let headerAndPadding: CGFloat = 48
+        let contentHeight = CGFloat(max(rows.count, 1)) * minimumRowHeight
+        let minRowsHeight = minimumRowHeight * 4
+        let maxRowsHeight = minimumRowHeight * 14
+        let clampedHeight = min(max(contentHeight, minRowsHeight), maxRowsHeight)
+        return clampedHeight + headerAndPadding
     }
 
     var body: some View {
@@ -6932,7 +7243,8 @@ private enum PodColumnWidth {
     static let restarts: CGFloat = 80
     static let node: CGFloat = 180
     static let status: CGFloat = 120
-    static let actions: CGFloat = 44
+    static let age: CGFloat = 80
+    static let actions: CGFloat = 52
 }
 
 private struct NavigationSidebar: View {
@@ -6992,7 +7304,7 @@ private struct NavigationSidebar: View {
 
 private struct ConfigResourceGroupsView: View {
     let resources: [ConfigResourceSummary]
-    let onOpenSecret: (ConfigResourceSummary) -> Void
+    let onOpenResource: (ConfigResourceSummary) -> Void
 
     private struct Group: Identifiable {
         let kind: ConfigResourceKind
@@ -7013,7 +7325,7 @@ private struct ConfigResourceGroupsView: View {
                 ConfigResourceGroupView(
                     kind: group.kind,
                     resources: group.items,
-                    onOpenSecret: onOpenSecret
+                    onOpenResource: onOpenResource
                 )
             }
         }
@@ -7023,7 +7335,7 @@ private struct ConfigResourceGroupsView: View {
 private struct ConfigResourceGroupView: View {
     let kind: ConfigResourceKind
     let resources: [ConfigResourceSummary]
-    let onOpenSecret: (ConfigResourceSummary) -> Void
+    let onOpenResource: (ConfigResourceSummary) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -7086,16 +7398,22 @@ private struct ConfigResourceGroupView: View {
             }
         ]
 
-        if kind == .secret {
+        if kind == .secret || kind == .configMap {
             columns.append(
                 FixedTableColumn("Actions", width: ConfigColumn.actions, alignment: .trailing) { resource in
                     Button {
-                        onOpenSecret(resource)
+                        onOpenResource(resource)
                     } label: {
-                        Image(systemName: resource.permissions.canReveal ? "eye" : "eye.slash")
+                        if kind == .secret {
+                            Image(systemName: resource.permissions.canReveal ? "eye" : "eye.slash")
+                        } else {
+                            Image(systemName: "eye")
+                        }
                     }
                     .buttonStyle(.borderless)
-                    .help(resource.permissions.canReveal ? "View and edit secret" : "View secret metadata (plaintext restricted by RBAC)")
+                    .help(kind == .secret
+                        ? (resource.permissions.canReveal ? "View and edit secret" : "View secret metadata (plaintext restricted by RBAC)")
+                        : (resource.permissions.canEdit ? "View and edit config map" : "View config map data (editing restricted by RBAC)"))
                 }
             )
         }

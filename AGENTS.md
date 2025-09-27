@@ -38,4 +38,5 @@
 - Rollout charts now surface success/failure annotations sourced from events; keep tooltip copy succinct and prefer ≤6 concurrent markers.
 - Topology cards should display per-service endpoint coverage plus p50/p95 latency text using the shared `ServiceCardStat` utilities.
 - Inspector port-forward badges must expose in-place teardown (no external Terminal); defer to `AppModel.stopPortForward` for cleanup.
+- ConfigMaps share the same diffable editor pattern as Secrets; populate `config_map_entries` when adding new fetchers so the detail sheet can render values and compute diffs.
 - Node and workload tables include toolbar sort menus (name, age, readiness, etc.); default to `Name ↑` and preserve namespace filter interaction when extending columns.

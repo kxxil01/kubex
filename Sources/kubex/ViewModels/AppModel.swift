@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var kubeconfigSources: [String] = []
     @Published private(set) var nodeActionsInProgress: Set<String> = []
     @Published private(set) var secretActionFeedback: SecretActionFeedback?
+    @Published private(set) var configMapActionFeedback: ConfigMapActionFeedback?
     @Published private(set) var nodeActionFeedback: [String: NodeActionFeedback] = [:]
     @Published private(set) var helmLoadingContexts: Set<String> = []
     @Published private(set) var helmErrors: [String: String] = [:]
@@ -856,6 +857,68 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func updateConfigMap(
+        cluster: Cluster,
+        namespace: Namespace,
+        configMap: ConfigResourceSummary,
+        entries: [ConfigMapEntryEditor]
+    ) async {
+        guard cluster.isConnected else {
+            self.error = AppModelError(message: "Connect to the cluster before editing config maps.")
+            configMapActionFeedback = ConfigMapActionFeedback(
+                configMapName: configMap.name,
+                namespace: namespace.name,
+                status: .failure,
+                message: "Cluster is disconnected.",
+                kubectlOutput: nil,
+                diff: computeConfigMapDiff(original: configMap.configMapEntries, updated: entries)
+            )
+            return
+        }
+
+        let plainData = Dictionary(uniqueKeysWithValues: entries.filter { !$0.isBinary }.map { ($0.key, $0.valueForSave()) })
+        let binaryData = Dictionary(uniqueKeysWithValues: entries.filter { $0.isBinary }.map { ($0.key, $0.valueForSave()) })
+        let diff = computeConfigMapDiff(original: configMap.configMapEntries, updated: entries)
+
+        showBanner("Updating config map \(configMap.name)…", style: .info)
+        do {
+            let output = try await clusterService.updateConfigMap(
+                contextName: cluster.contextName,
+                namespace: namespace.name,
+                name: configMap.name,
+                data: plainData,
+                binaryData: binaryData
+            )
+            applyOptimisticConfigMapUpdate(
+                clusterID: cluster.id,
+                namespaceName: namespace.name,
+                configMapName: configMap.name,
+                entries: entries
+            )
+            configMapActionFeedback = ConfigMapActionFeedback(
+                configMapName: configMap.name,
+                namespace: namespace.name,
+                status: .success,
+                message: "ConfigMap \(configMap.name) updated",
+                kubectlOutput: output.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty(),
+                diff: diff
+            )
+            await refreshNamespace(clusterID: cluster.id, contextName: cluster.contextName, namespaceName: namespace.name)
+            showBanner("ConfigMap \(configMap.name) updated", style: .success)
+        } catch {
+            let message = sanitizeErrorMessage(error.localizedDescription)
+            self.error = AppModelError(message: message)
+            configMapActionFeedback = ConfigMapActionFeedback(
+                configMapName: configMap.name,
+                namespace: namespace.name,
+                status: .failure,
+                message: message,
+                kubectlOutput: nil,
+                diff: diff
+            )
+        }
+    }
+
     private func applyNamespaceManifest(
         cluster: Cluster,
         namespaceName: String,
@@ -1336,6 +1399,37 @@ final class AppModel: ObservableObject {
         SecretDiffSummary.compute(original: original, updated: updated)
     }
 
+    private func applyOptimisticConfigMapUpdate(
+        clusterID: Cluster.ID,
+        namespaceName: String,
+        configMapName: String,
+        entries: [ConfigMapEntryEditor]
+    ) {
+        guard let clusterIndex = clusters.firstIndex(where: { $0.id == clusterID }) else { return }
+        var cluster = clusters[clusterIndex]
+        guard let namespaceIndex = cluster.namespaces.firstIndex(where: { $0.name == namespaceName }) else { return }
+
+        var namespace = cluster.namespaces[namespaceIndex]
+        guard let configMapIndex = namespace.configResources.firstIndex(where: { $0.kind == .configMap && $0.name == configMapName }) else { return }
+
+        var summary = namespace.configResources[configMapIndex]
+        let updatedEntries = entries
+            .map { ConfigMapEntry(key: $0.key, value: $0.valueForSave(), isBinary: $0.isBinary) }
+            .sorted { $0.key < $1.key }
+        summary.configMapEntries = updatedEntries
+        summary.dataCount = updatedEntries.count
+        namespace.configResources[configMapIndex] = summary
+        cluster.namespaces[namespaceIndex] = namespace
+        clusters[clusterIndex] = cluster
+    }
+
+    private func computeConfigMapDiff(
+        original: [ConfigMapEntry]?,
+        updated: [ConfigMapEntryEditor]
+    ) -> [ConfigMapDiffSummary] {
+        ConfigMapDiffSummary.compute(original: original, updated: updated)
+    }
+
     private func stopClusterWatcher() {
         clusterRefreshTask?.cancel()
         clusterRefreshTask = nil
@@ -1738,6 +1832,22 @@ struct SecretActionFeedback: Identifiable {
     let message: String
     let kubectlOutput: String?
     let diff: [SecretDiffSummary]
+    let timestamp: Date = Date()
+}
+
+struct ConfigMapActionFeedback: Identifiable {
+    enum Status {
+        case success
+        case failure
+    }
+
+    let id = UUID()
+    let configMapName: String
+    let namespace: String
+    let status: Status
+    let message: String
+    let kubectlOutput: String?
+    let diff: [ConfigMapDiffSummary]
     let timestamp: Date = Date()
 }
 

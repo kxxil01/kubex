@@ -1599,6 +1599,17 @@ final class KubectlClusterService: ClusterService {
             if immutableFlag { summaryParts.append("Immutable") }
             if binaryCount > 0 { summaryParts.append("Binary: \(binaryCount)") }
             let creationDate = item.metadata.creationTimestamp.flatMap { isoFormatter.date(from: $0) }
+            let textEntries: [ConfigMapEntry] = item.data.map { data in
+                data.sorted { $0.key < $1.key }.map { key, value in
+                    ConfigMapEntry(key: key, value: value, isBinary: false)
+                }
+            } ?? []
+            let binaryEntries: [ConfigMapEntry] = item.binaryData.map { data in
+                data.sorted { $0.key < $1.key }.map { key, value in
+                    ConfigMapEntry(key: key, value: value, isBinary: true)
+                }
+            } ?? []
+            let combinedEntries = (textEntries + binaryEntries).sorted { $0.key < $1.key }
             return ConfigResourceSummary(
                 id: UUID(),
                 name: item.metadata.name,
@@ -1607,6 +1618,8 @@ final class KubectlClusterService: ClusterService {
                 dataCount: totalDataCount > 0 ? totalDataCount : nil,
                 summary: summaryParts.isEmpty ? nil : summaryParts.joined(separator: " · "),
                 age: creationDate.map(EventAge.from),
+                secretEntries: nil,
+                configMapEntries: combinedEntries.isEmpty ? nil : combinedEntries,
                 permissions: .fullAccess
             )
         }
@@ -1951,6 +1964,38 @@ final class KubectlClusterService: ClusterService {
 
         let jsonData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted])
         let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("kubex-secret-\(UUID().uuidString).json")
+        try jsonData.write(to: tempURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let output = try await runner.run(
+            arguments: ["apply", "-f", tempURL.path, "--context", contextName],
+            kubeconfigPath: kubeconfigPath
+        )
+        return output
+    }
+
+    func updateConfigMap(
+        contextName: String,
+        namespace: String,
+        name: String,
+        data: [String: String],
+        binaryData: [String: String]
+    ) async throws -> String {
+        var manifest: [String: Any] = [
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": [
+                "name": name,
+                "namespace": namespace
+            ],
+            "data": data
+        ]
+        if !binaryData.isEmpty {
+            manifest["binaryData"] = binaryData
+        }
+
+        let jsonData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted])
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("kubex-configmap-\(UUID().uuidString).json")
         try jsonData.write(to: tempURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 

@@ -242,6 +242,7 @@ struct ConfigResourceSummary: Identifiable, Hashable {
     var summary: String?
     var age: EventAge?
     var secretEntries: [SecretDataEntry]? = nil
+    var configMapEntries: [ConfigMapEntry]? = nil
     var permissions: ConfigResourcePermissions = .fullAccess
 }
 
@@ -351,6 +352,102 @@ struct SecretEntryEditor: Identifiable, Hashable {
     var isBinary: Bool { !canDecode }
 
     var originalValueForDisplay: String { originalEncodedValue }
+}
+
+struct ConfigMapEntry: Identifiable, Hashable {
+    let id = UUID()
+    var key: String
+    var value: String
+    var isBinary: Bool
+}
+
+struct ConfigMapEntryEditor: Identifiable, Hashable {
+    let id = UUID()
+    let key: String
+    private let originalValue: String
+    private(set) var value: String
+    let isBinary: Bool
+
+    init(entry: ConfigMapEntry) {
+        self.key = entry.key
+        self.originalValue = entry.value
+        self.value = entry.value
+        self.isBinary = entry.isBinary
+    }
+
+    var isEdited: Bool { value != originalValue }
+    var isEditable: Bool { !isBinary }
+
+    mutating func updateValue(_ newValue: String) {
+        guard isEditable else { return }
+        value = newValue
+    }
+
+    func valueForSave() -> String { value }
+}
+
+struct ConfigMapDiffSummary: Identifiable, Hashable {
+    enum ChangeKind: Hashable {
+        case added
+        case removed
+        case modified
+    }
+
+    let id = UUID()
+    let key: String
+    let kind: ChangeKind
+    let before: String?
+    let after: String?
+    let isBinary: Bool
+
+    static func compute(original: [ConfigMapEntry]?, updated: [ConfigMapEntryEditor]) -> [ConfigMapDiffSummary] {
+        let originalMap = Dictionary(uniqueKeysWithValues: (original ?? []).map { ($0.key, $0) })
+        let updatedMap = Dictionary(uniqueKeysWithValues: updated.map { ($0.key, $0) })
+
+        var diffs: [ConfigMapDiffSummary] = []
+
+        let removedKeys = Set(originalMap.keys).subtracting(updatedMap.keys)
+        for key in removedKeys.sorted() {
+            if let entry = originalMap[key] {
+                diffs.append(ConfigMapDiffSummary(
+                    key: key,
+                    kind: .removed,
+                    before: entry.value,
+                    after: nil,
+                    isBinary: entry.isBinary
+                ))
+            }
+        }
+
+        let addedKeys = Set(updatedMap.keys).subtracting(originalMap.keys)
+        for key in addedKeys.sorted() {
+            if let entry = updatedMap[key] {
+                diffs.append(ConfigMapDiffSummary(
+                    key: key,
+                    kind: .added,
+                    before: nil,
+                    after: entry.valueForSave(),
+                    isBinary: entry.isBinary
+                ))
+            }
+        }
+
+        let commonKeys = Set(originalMap.keys).intersection(updatedMap.keys)
+        for key in commonKeys.sorted() {
+            guard let originalEntry = originalMap[key], let updatedEntry = updatedMap[key] else { continue }
+            if originalEntry.value != updatedEntry.valueForSave() {
+                diffs.append(ConfigMapDiffSummary(
+                    key: key,
+                    kind: .modified,
+                    before: originalEntry.value,
+                    after: updatedEntry.valueForSave(),
+                    isBinary: originalEntry.isBinary || updatedEntry.isBinary
+                ))
+            }
+        }
+
+        return diffs
+    }
 }
 
 struct SecretDiffSummary: Identifiable, Hashable {
