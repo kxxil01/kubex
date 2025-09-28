@@ -14,7 +14,6 @@ import Charts
 struct ClusterDetailView: View {
     enum Tab: Hashable, Identifiable, CaseIterable {
         case overview
-        case applications
         case nodes
         case workloadsOverview
         case workloadsPods
@@ -51,8 +50,7 @@ struct ClusterDetailView: View {
 
         var title: String {
             switch self {
-            case .overview: return "Overview"
-            case .applications: return "Applications"
+            case .overview: return "Clusters"
             case .nodes: return "Nodes"
             case .workloadsOverview: return "Overview"
             case .workloadsPods: return "Pods"
@@ -90,7 +88,6 @@ struct ClusterDetailView: View {
         var icon: String {
             switch self {
             case .overview: return "rectangle.and.text.magnifyingglass"
-            case .applications: return "app.connected.to.app.below.fill"
             case .nodes: return "cpu"
             case .workloadsOverview: return "shippingbox"
             case .workloadsPods: return "circle.grid.3x3.fill"
@@ -108,14 +105,14 @@ struct ClusterDetailView: View {
             case .configHPAs: return "gauge"
             case .configPodDisruptionBudgets: return "shield"
             case .helmReleases: return "shippingbox"
-            case .helmRepositories: return "shippingbox.and.arrow.up"
+            case .helmRepositories: return "tray.and.arrow.down"
             case .networkServices: return "switch.2"
             case .networkEndpoints: return "point.3.filled.connected.trianglepath.dotted"
             case .networkIngresses: return "cloud"
             case .networkPolicies: return "shield.lefthalf.fill"
             case .networkLoadBalancers: return "server.rack"
             case .networkPortForwards: return "bolt.horizontal"
-            case .storagePersistentVolumeClaims: return "externaldrive"
+            case .storagePersistentVolumeClaims: return "externaldrive.fill"
             case .storagePersistentVolumes: return "externaldrive.connected.to.line.below"
             case .storageStorageClasses: return "internaldrive"
             case .namespaces: return "square.stack.3d.up.fill"
@@ -148,8 +145,7 @@ struct ClusterDetailView: View {
 
         var usesResourceList: Bool {
             switch self {
-            case .applications,
-                 .workloadsOverview,
+            case .workloadsOverview,
                  .workloadsPods,
                  .workloadsDeployments,
                  .workloadsDaemonSets,
@@ -224,7 +220,6 @@ struct ClusterDetailView: View {
             }
             switch self {
             case .overview: return .overview
-            case .applications: return .applications
             case .nodes: return .nodes
             case .configConfigMaps,
                  .configSecrets,
@@ -258,7 +253,6 @@ struct ClusterDetailView: View {
         static func tab(for category: ResourceCategory) -> Tab {
             switch category {
             case .overview: return .overview
-            case .applications: return .applications
             case .nodes: return .nodes
             case .config: return .configConfigMaps
             case .helm: return .helmReleases
@@ -275,7 +269,6 @@ struct ClusterDetailView: View {
         var preferenceValue: String {
             switch self {
             case .overview: return "overview"
-            case .applications: return "applications"
             case .nodes: return "nodes"
             case .workloadsOverview: return "workloads_overview"
             case .workloadsPods: return "workloads_pods"
@@ -313,7 +306,6 @@ struct ClusterDetailView: View {
         init?(preferenceValue: String) {
             switch preferenceValue {
             case "overview": self = .overview
-            case "applications": self = .applications
             case "nodes": self = .nodes
             case "workloads_overview": self = .workloadsOverview
             case "workloads_pods": self = .workloadsPods
@@ -354,7 +346,6 @@ struct ClusterDetailView: View {
     enum ResourceCategory: String, CaseIterable, Identifiable {
         case overview
         case nodes
-        case applications
         case workloads
         case config
         case helm
@@ -370,7 +361,6 @@ struct ClusterDetailView: View {
         static let navigationOrder: [ResourceCategory] = [
             .overview,
             .nodes,
-            .applications,
             .workloads,
             .config,
             .network,
@@ -384,8 +374,7 @@ struct ClusterDetailView: View {
 
         var menuTitle: String {
             switch self {
-            case .overview: return "Overview"
-            case .applications: return "Applications"
+            case .overview: return "Clusters"
             case .nodes: return "Nodes"
             case .workloads: return "Workloads"
             case .config: return "Config"
@@ -402,13 +391,12 @@ struct ClusterDetailView: View {
         var systemImage: String? {
             switch self {
             case .overview: return "rectangle.and.text.magnifyingglass"
-            case .applications: return "app.connected.to.app.below.fill"
             case .nodes: return "cpu"
             case .workloads: return "shippingbox"
             case .config: return "gearshape.2"
-            case .helm: return "shippingbox.circle"
+            case .helm: return "shippingbox"
             case .network: return "point.3.connected.trianglepath.dotted"
-            case .storage: return "externaldrive.stack"
+            case .storage: return "externaldrive.fill"
             case .namespaces: return "square.stack.3d.up.fill"
             case .events: return "bell"
             case .accessControl: return "lock.shield"
@@ -416,10 +404,18 @@ struct ClusterDetailView: View {
             }
         }
 
+        var isCollapsible: Bool {
+            switch self {
+            case .overview, .nodes, .namespaces, .events:
+                return false
+            default:
+                return true
+            }
+        }
+
         var tabs: [ClusterDetailView.Tab] {
             switch self {
             case .overview: return [.overview]
-            case .applications: return [.applications]
             case .nodes: return [.nodes]
             case .workloads: return Tab.workloadTabs
             case .config:
@@ -567,8 +563,7 @@ struct ClusterDetailView: View {
 
     private var isWorkloadListTab: Bool {
         switch selectedTab {
-        case .applications,
-             .workloadsOverview,
+        case .workloadsOverview,
              .workloadsDeployments,
              .workloadsDaemonSets,
              .workloadsStatefulSets,
@@ -1236,7 +1231,7 @@ struct ClusterDetailView: View {
     @ViewBuilder
     private var resourceListBody: some View {
         switch selectedTab {
-        case .applications, .workloadsOverview:
+        case .workloadsOverview:
             WorkloadListView(
                 namespace: namespace,
                 isConnected: isConnected,
@@ -3826,7 +3821,7 @@ private struct ResourceInspector: View {
                 return "Storage class coverage is coming soon."
             case .workloadsPods:
                 return "Select a pod to inspect status, metrics, and events."
-            case .applications, .workloadsOverview, .workloadsDeployments, .workloadsDaemonSets, .workloadsStatefulSets, .workloadsReplicaSets, .workloadsReplicationControllers, .workloadsJobs, .workloadsCronJobs:
+            case .workloadsOverview, .workloadsDeployments, .workloadsDaemonSets, .workloadsStatefulSets, .workloadsReplicaSets, .workloadsReplicationControllers, .workloadsJobs, .workloadsCronJobs:
                 return "Select a workload to inspect its details below."
             default:
                 return "Choose a resource from the list to see its details."
@@ -4216,7 +4211,7 @@ extension ClusterDetailView {
         }
 
         switch selectedTab {
-        case .applications, .workloadsOverview, .workloadsDeployments, .workloadsDaemonSets, .workloadsStatefulSets, .workloadsReplicaSets, .workloadsReplicationControllers, .workloadsJobs, .workloadsCronJobs:
+        case .workloadsOverview, .workloadsDeployments, .workloadsDaemonSets, .workloadsStatefulSets, .workloadsReplicaSets, .workloadsReplicationControllers, .workloadsJobs, .workloadsCronJobs:
             guard let workloadID = selectedWorkloadIDs.first,
                   let targetNamespace = namespace(forWorkloadID: workloadID) else {
                 model.clearInspectorSelection()
@@ -5960,29 +5955,6 @@ private func label(for value: String) -> String {
 }
 }
 
-private struct SectionBox<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
-            content
-        }
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func optionalHelp(_ message: String?) -> some View {
-        if let message {
-            self.help(message)
-        } else {
-            self
-        }
-    }
-}
 
 private struct DetailRow: View {
     let label: String
@@ -9158,150 +9130,6 @@ private struct CustomResourcesSection: View {
     }
 }
 
-private struct FixedTableColumn<Row> {
-    let title: String
-    let width: CGFloat
-    let alignment: Alignment
-    private let renderer: (Row) -> AnyView
-
-    init(_ title: String, width: CGFloat, alignment: Alignment = .leading, @ViewBuilder content: @escaping (Row) -> some View) {
-        self.title = title
-        self.width = width
-        self.alignment = alignment
-        self.renderer = { row in AnyView(content(row)) }
-    }
-
-    func view(for row: Row) -> AnyView {
-        renderer(row)
-    }
-}
-
-private struct FixedColumnTable<Row: Identifiable>: View {
-    let rows: [Row]
-    let columns: [FixedTableColumn<Row>]
-    var selection: Binding<Set<Row.ID>>? = nil
-    var allowsMultipleSelection: Bool = true
-    var highlightSelection: Bool = true
-    var selectionColor: Color = Color.accentColor.opacity(0.08)
-    var rowVerticalPadding: CGFloat = 6
-    var rowHorizontalPadding: CGFloat = 12
-    var minimumRowHeight: CGFloat = 34
-    var headerBackground: Color = Color(nsColor: .underPageBackgroundColor)
-    var tableBackground: Color = Color(nsColor: .textBackgroundColor)
-    var showsRowDividers: Bool = true
-    var focusID: Row.ID? = nil
-    var onRowTap: ((Row) -> Void)? = nil
-    var onRowDoubleTap: ((Row) -> Void)? = nil
-    var rowBackground: ((Row, Bool) -> Color?)? = nil
-
-    private var minimumHeight: CGFloat {
-        let headerAndPadding: CGFloat = 48
-        let contentHeight = CGFloat(max(rows.count, 1)) * minimumRowHeight
-        let minRowsHeight = minimumRowHeight * 4
-        let maxRowsHeight = minimumRowHeight * 14
-        let clampedHeight = min(max(contentHeight, minRowsHeight), maxRowsHeight)
-        return clampedHeight + headerAndPadding
-    }
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                Divider()
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                            rowView(for: row, index: index)
-                                .id(row.id)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minHeight: minimumHeight, maxHeight: .infinity, alignment: .topLeading)
-            }
-            .background(tableBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .onChange(of: focusID) { _, newValue in
-                guard let newValue else { return }
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    proxy.scrollTo(newValue, anchor: .center)
-                }
-            }
-        }
-    }
-
-    private func rowView(for row: Row, index: Int) -> some View {
-        let isSelected = selection?.wrappedValue.contains(row.id) ?? false
-        let singleTap = makeSingleTapHandler(for: row)
-
-        return VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                ForEach(Array(columns.enumerated()), id: \.offset) { columnPair in
-                    columnPair.element.view(for: row)
-                        .frame(width: columnPair.element.width, alignment: columnPair.element.alignment)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.vertical, rowVerticalPadding)
-            .padding(.horizontal, rowHorizontalPadding)
-            .background(backgroundColor(for: row, isSelected: isSelected))
-            .contentShape(Rectangle())
-            .onTapGesture(perform: singleTap)
-            .onTapGesture(count: 2) {
-                onRowDoubleTap?(row)
-            }
-
-            if showsRowDividers && index < rows.count - 1 {
-                Divider()
-            }
-        }
-    }
-
-    private func makeSingleTapHandler(for row: Row) -> () -> Void {
-        {
-            if let binding = selection {
-                var updated = binding.wrappedValue
-                if allowsMultipleSelection {
-                    if updated.contains(row.id) {
-                        updated.remove(row.id)
-                    } else {
-                        updated.insert(row.id)
-                    }
-                } else {
-                    updated = [row.id]
-                }
-                binding.wrappedValue = updated
-            }
-            onRowTap?(row)
-        }
-    }
-
-    private func backgroundColor(for row: Row, isSelected: Bool) -> Color {
-        if let custom = rowBackground?(row, isSelected) {
-            return custom
-        }
-        if highlightSelection && isSelected {
-            return selectionColor
-        }
-        return Color.clear
-    }
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            ForEach(Array(columns.enumerated()), id: \.offset) { columnPair in
-                Text(columnPair.element.title)
-                    .frame(width: columnPair.element.width, alignment: columnPair.element.alignment)
-            }
-            Spacer(minLength: 0)
-        }
-        .font(.caption.bold())
-        .foregroundStyle(.secondary)
-        .padding(.vertical, 6)
-        .padding(.horizontal, 12)
-        .background(headerBackground)
-    }
-}
-
 private enum HelmColumnWidth {
     static let name: CGFloat = 200
     static let namespace: CGFloat = 160
@@ -9361,61 +9189,7 @@ private enum WorkloadColumnWidth {
     static let actions: CGFloat = 52
 }
 
-private struct FilterChip: View {
-    let title: String
-    let isSelected: Bool
-    var systemImage: String? = nil
-    var tint: Color = .accentColor
-    var action: () -> Void
 
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .imageScale(.small)
-                }
-                Text(title)
-                    .font(.caption)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                Capsule()
-                    .fill(backgroundColor)
-            )
-            .overlay(
-                Capsule()
-                    .stroke(borderColor, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? tint : Color.primary)
-        .animation(.easeInOut(duration: 0.15), value: isSelected)
-    }
-
-    private var backgroundColor: Color {
-        if isSelected {
-            return tint.opacity(0.2)
-        }
-        return Color(nsColor: .controlBackgroundColor)
-    }
-
-    private var borderColor: Color {
-        isSelected ? tint.opacity(0.6) : Color.secondary.opacity(0.25)
-    }
-}
-
-@ViewBuilder
-private func centeredUnavailableView(
-    _ title: String,
-    systemImage: String,
-    description: Text
-) -> some View {
-    ContentUnavailableView(title, systemImage: systemImage, description: description)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-}
 
 
 private enum PodColumnWidth {
@@ -9429,96 +9203,6 @@ private enum PodColumnWidth {
     static let actions: CGFloat = 52
 }
 
-private struct EventTimelineView: View {
-    let events: [EventSummary]
-
-    private static let formatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
-
-    private var orderedEvents: [EventSummary] {
-        events.sorted { eventDate($0) > eventDate($1) }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(orderedEvents.enumerated()), id: \.element.id) { index, event in
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(spacing: 0) {
-                        Circle()
-                            .fill(color(for: event))
-                            .frame(width: 8, height: 8)
-                        if index < orderedEvents.count - 1 {
-                            Rectangle()
-                                .fill(Color.secondary.opacity(0.3))
-                                .frame(width: 2, height: 18)
-                                .padding(.top, 2)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 8) {
-                            Label(event.type.rawValue.capitalized, systemImage: icon(for: event))
-                                .labelStyle(.titleAndIcon)
-                                .font(.caption.bold())
-                                .foregroundStyle(color(for: event))
-                            if event.count > 1 {
-                                Text("×\(event.count)")
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text(relativeTime(for: event))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(event.message)
-                            .font(.caption)
-                            .multilineTextAlignment(.leading)
-                            .lineLimit(3)
-                    }
-                }
-            }
-        }
-    }
-
-    private func eventDate(_ event: EventSummary) -> Date {
-        if let timestamp = event.timestamp {
-            return timestamp
-        }
-        let now = Date()
-        switch event.age {
-        case .minutes(let value):
-            return now.addingTimeInterval(Double(-value * 60))
-        case .hours(let value):
-            return now.addingTimeInterval(Double(-value * 3600))
-        case .days(let value):
-            return now.addingTimeInterval(Double(-value * 86400))
-        }
-    }
-
-    private func relativeTime(for event: EventSummary) -> String {
-        EventTimelineView.formatter.localizedString(for: eventDate(event), relativeTo: Date())
-    }
-
-    private func color(for event: EventSummary) -> Color {
-        switch event.type {
-        case .error: return .red
-        case .warning: return .orange
-        case .normal: return .blue
-        }
-    }
-
-    private func icon(for event: EventSummary) -> String {
-        switch event.type {
-        case .error: return "exclamationmark.octagon.fill"
-        case .warning: return "exclamationmark.triangle.fill"
-        case .normal: return "info.circle.fill"
-        }
-    }
-}
 
 private struct NavigationSidebar: View {
     @Binding var selectedTab: ClusterDetailView.Tab
@@ -9532,27 +9216,26 @@ private struct NavigationSidebar: View {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(ClusterDetailView.ResourceCategory.navigationOrder, id: \.id) { category in
                     let tabs = category.tabs
-                    if !tabs.isEmpty {
-                        if category == .namespaces || category == .events {
-                            navigationRow(for: tabs[0])
-                                .padding(.top, 6)
-                        } else {
-                            DisclosureGroup(
-                                isExpanded: binding(for: category)
-                            ) {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    ForEach(tabs, id: \.self) { tab in
-                                        navigationRow(for: tab)
+                    if let first = tabs.first {
+                        if category.isCollapsible {
+                            let isExpanded = expandedCategories.contains(category)
+                            VStack(alignment: .leading, spacing: 6) {
+                                categoryButton(for: category, isExpanded: isExpanded)
+                                if isExpanded {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        ForEach(tabs, id: \.self) { tab in
+                                            navigationRow(for: tab)
+                                        }
                                     }
+                                    .padding(.top, 6)
                                 }
-                                .padding(.top, 6)
-                            } label: {
-                            categoryLabel(for: category)
+                            }
+                        } else {
+                            navigationRow(for: first)
+                                .padding(.top, category == .overview ? 0 : 6)
                         }
-                        .disclosureGroupStyle(.automatic)
                     }
                 }
-            }
             }
             .padding(.vertical, 16)
             .padding(.horizontal, 12)
@@ -9592,19 +9275,6 @@ private struct NavigationSidebar: View {
         }
     }
 
-    private func binding(for category: ClusterDetailView.ResourceCategory) -> Binding<Bool> {
-        Binding(
-            get: { expandedCategories.contains(category) },
-            set: { isExpanded in
-                if isExpanded {
-                    expandedCategories.insert(category)
-                } else {
-                    expandedCategories.remove(category)
-                }
-            }
-        )
-    }
-
     private func toggle(_ category: ClusterDetailView.ResourceCategory) {
         if expandedCategories.contains(category) {
             expandedCategories.remove(category)
@@ -9613,29 +9283,39 @@ private struct NavigationSidebar: View {
         }
     }
 
-    private func categoryLabel(for category: ClusterDetailView.ResourceCategory) -> some View {
-        HStack(spacing: 8) {
-            if let icon = category.systemImage {
-                Image(systemName: icon)
+    private func categoryButton(for category: ClusterDetailView.ResourceCategory, isExpanded: Bool) -> some View {
+        Button {
+            toggle(category)
+        } label: {
+            HStack(spacing: 8) {
+                if let icon = category.systemImage {
+                    Image(systemName: icon)
+                        .font(.caption)
+                }
+                Text(category.menuTitle.uppercased())
                     .font(.caption)
+                Spacer()
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .opacity(0.75)
             }
-            Text(category.menuTitle.uppercased())
-                .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(
+                        Color.accentColor.opacity(
+                            hoveredCategory == category || isExpanded ? 0.12 : 0
+                        )
+                    )
+            )
         }
-        .foregroundStyle(.secondary)
-        .padding(.vertical, 6)
-        .padding(.horizontal, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.accentColor.opacity(hoveredCategory == category ? 0.12 : 0))
-        )
+        .buttonStyle(.plain)
         .contentShape(Rectangle())
         .onHover { hovering in
             hoveredCategory = hovering ? category : nil
-        }
-        .onTapGesture {
-            toggle(category)
         }
     }
 }
@@ -10011,348 +9691,6 @@ private struct WorkloadTableView: View {
     }
 
 }
-
-private struct ApplicationsSection: View {
-    let namespace: Namespace?
-    let isConnected: Bool
-    let onSelect: (WorkloadSummary) -> Void
-
-    var body: some View {
-        WorkloadsSection(namespace: namespace, isConnected: isConnected, onSelect: onSelect)
-    }
-}
-
-private struct NodesSection: View {
-    let cluster: Cluster
-    @Binding var sortOption: NodeSortOption
-    var filterState: NodeFilterState
-    let isNodeBusy: (NodeInfo) -> Bool
-    let nodeActionError: (NodeInfo) -> NodeActionFeedback?
-    let onShowDetails: (NodeInfo) -> Void
-    let onShell: (NodeInfo) -> Void
-    let onCordon: (NodeInfo) -> Void
-    let onDrain: (NodeInfo) -> Void
-    let onEdit: (NodeInfo) -> Void
-    let onDelete: (NodeInfo) -> Void
-
-    private var isConnected: Bool { cluster.isConnected }
-    private var nodes: [NodeInfo] { cluster.nodes }
-    private var filteredNodes: [NodeInfo] {
-        cluster.nodes.filter { filterState.matches($0) }
-    }
-    private var sortedNodes: [NodeInfo] {
-        filteredNodes.sorted(by: compareNodes)
-    }
-
-    var body: some View {
-        if !cluster.isConnected {
-            centeredUnavailableView(
-                "Not Connected",
-                systemImage: "bolt.slash",
-                description: Text("Connect to the cluster to inspect nodes.")
-            )
-        } else if nodes.isEmpty, cluster.nodeSummary.total > 0 {
-            VStack(alignment: .leading, spacing: 8) {
-                ProgressView()
-                Text("Loading nodes…")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if nodes.isEmpty {
-            centeredUnavailableView(
-                "No Nodes",
-                systemImage: "cpu",
-                description: Text("Nodes will appear here once the cluster finishes loading.")
-            )
-        } else if filteredNodes.isEmpty {
-            centeredUnavailableView(
-                "No Matching Nodes",
-                systemImage: "line.3.horizontal.decrease.circle",
-                description: Text("Adjust filters to see node results.")
-            )
-        } else {
-            VStack(alignment: .leading, spacing: 16) {
-                metricsSummary
-                nodeTable
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private var metricsSummary: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 16)], alignment: .leading, spacing: 16) {
-            summaryTile(label: "Total", value: "\(cluster.nodeSummary.total)")
-            summaryTile(label: "Ready", value: "\(cluster.nodeSummary.ready)")
-            summaryTile(label: "CPU", value: PercentageFormatter.format(cluster.nodeSummary.cpuUsage))
-            summaryTile(label: "Memory", value: PercentageFormatter.format(cluster.nodeSummary.memoryUsage))
-            if let diskAverage = cluster.nodeSummary.diskUsage {
-                summaryTile(label: "Disk", value: PercentageFormatter.format(diskAverage))
-            }
-        }
-        .padding(.horizontal, 4)
-    }
-
-    private var nodeTable: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            nodeHeader
-                .padding(.vertical, 6)
-                .padding(.horizontal, 12)
-                .background(Color(nsColor: .underPageBackgroundColor))
-            Divider()
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(sortedNodes) { node in
-                        nodeRow(for: node)
-                        Divider()
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
-            }
-            .frame(minHeight: 220)
-        }
-    }
-
-    private var nodeHeader: some View {
-        HStack(spacing: 8) {
-            sortableHeader(title: "Name", field: .name)
-                .frame(width: Column.name, alignment: .leading)
-            sortableHeader(title: "Warnings", field: .warnings)
-                .frame(width: Column.warnings, alignment: .leading)
-            sortableHeader(title: "CPU", field: .cpu)
-                .frame(width: Column.cpu, alignment: .leading)
-            sortableHeader(title: "Memory", field: .memory)
-                .frame(width: Column.memory, alignment: .leading)
-            sortableHeader(title: "Disk", field: .disk)
-                .frame(width: Column.disk, alignment: .leading)
-            Text("Taints")
-                .frame(width: Column.taints, alignment: .leading)
-            Text("Version")
-                .frame(width: Column.version, alignment: .leading)
-            sortableHeader(title: "Age", field: .age)
-                .frame(width: Column.age, alignment: .leading)
-            Text("Conditions")
-                .frame(width: Column.conditions, alignment: .leading)
-            Spacer(minLength: 0)
-            Text("")
-                .frame(width: Column.actions, alignment: .trailing)
-        }
-        .font(.caption.bold())
-        .foregroundStyle(.secondary)
-    }
-
-    private func nodeRow(for node: NodeInfo) -> some View {
-        let busy = isNodeBusy(node)
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                Text(node.name)
-                    .font(.body.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(width: Column.name, alignment: .leading)
-
-                Group {
-                    if node.warningCount > 0 {
-                        Text("\(node.warningCount)")
-                            .foregroundStyle(Color.orange)
-                    } else {
-                        Text("—")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: Column.warnings, alignment: .leading)
-
-                Text(node.cpuDisplay)
-                    .foregroundStyle(.secondary)
-                    .frame(width: Column.cpu, alignment: .leading)
-
-                Text(node.memoryDisplay)
-                    .foregroundStyle(.secondary)
-                    .frame(width: Column.memory, alignment: .leading)
-
-                Text(node.diskDisplay)
-                    .foregroundStyle(.secondary)
-                    .frame(width: Column.disk, alignment: .leading)
-
-                Text(node.taintSummary)
-                    .lineLimit(3)
-                    .truncationMode(.tail)
-                    .frame(width: Column.taints, alignment: .leading)
-
-                Text(node.kubeletVersion)
-                    .foregroundStyle(.secondary)
-                    .frame(width: Column.version, alignment: .leading)
-
-                Text(node.age?.displayText ?? "—")
-                    .foregroundStyle(.secondary)
-                    .frame(width: Column.age, alignment: .leading)
-
-                Text(node.conditionSummary)
-                    .lineLimit(3)
-                    .truncationMode(.tail)
-                    .frame(width: Column.conditions, alignment: .leading)
-
-                nodeActions(for: node, busy: busy)
-                    .frame(width: Column.actions, alignment: .trailing)
-            }
-
-            if let feedback = nodeActionError(node) {
-                NodeInlineErrorView(feedback: feedback)
-                    .padding(.leading, 4)
-            }
-        }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 4)
-        .opacity(busy ? 0.6 : 1)
-    }
-
-    @ViewBuilder
-    private func nodeActions(for node: NodeInfo, busy: Bool) -> some View {
-        if busy {
-            ProgressView()
-                .controlSize(.small)
-        } else {
-            Menu {
-                Button("Show Details") { onShowDetails(node) }
-                Button("Shell") { onShell(node) }
-                    .disabled(!isConnected)
-                Divider()
-                Button("Cordon") { onCordon(node) }
-                    .disabled(!isConnected)
-                Button("Drain") { onDrain(node) }
-                    .disabled(!isConnected)
-                Button("Edit") { onEdit(node) }
-                    .disabled(!isConnected)
-                Button(role: .destructive) { onDelete(node) } label: {
-                    Text("Delete")
-                }
-                .disabled(!isConnected)
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
-                    .padding(4)
-            }
-            .menuStyle(.borderlessButton)
-        }
-    }
-
-    private func summaryTile(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.title3.bold())
-        }
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private func sortableHeader(title: String, field: NodeSortField) -> some View {
-        Button {
-            if sortOption.field == field {
-                sortOption.toggleDirection()
-            } else {
-                sortOption = NodeSortOption(field: field, direction: .ascending)
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(title)
-                if sortOption.field == field {
-                    Image(systemName: sortOption.direction.symbolName)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-    }
-
-    private func compareNodes(_ lhs: NodeInfo, _ rhs: NodeInfo) -> Bool {
-        let ascending = sortOption.direction == SortDirection.ascending
-        switch sortOption.field {
-        case .name:
-            return compareNames(lhs, rhs, ascending: ascending)
-        case .warnings:
-            return compareNumeric(Double(lhs.warningCount), Double(rhs.warningCount), lhs: lhs, rhs: rhs, ascending: ascending)
-        case .cpu:
-            return compareNumeric(lhs.cpuUsageRatio, rhs.cpuUsageRatio, lhs: lhs, rhs: rhs, ascending: ascending)
-        case .memory:
-            return compareNumeric(lhs.memoryUsageRatio, rhs.memoryUsageRatio, lhs: lhs, rhs: rhs, ascending: ascending)
-        case .disk:
-            return compareNumeric(lhs.diskRatio, rhs.diskRatio, lhs: lhs, rhs: rhs, ascending: ascending)
-        case .age:
-            return compareNumeric(lhs.age?.totalMinutes, rhs.age?.totalMinutes, lhs: lhs, rhs: rhs, ascending: ascending)
-        }
-    }
-
-    private func compareNumeric(_ lhsValue: Double?, _ rhsValue: Double?, lhs: NodeInfo, rhs: NodeInfo, ascending: Bool) -> Bool {
-        let left = normalizedNumeric(lhsValue, ascending: ascending)
-        let right = normalizedNumeric(rhsValue, ascending: ascending)
-        if left == right {
-            return compareNames(lhs, rhs, ascending: ascending)
-        }
-        return ascending ? left < right : left > right
-    }
-
-    private func normalizedNumeric(_ value: Double?, ascending: Bool) -> Double {
-        guard let value else {
-            return ascending ? Double.greatestFiniteMagnitude : -Double.greatestFiniteMagnitude
-        }
-        return value
-    }
-
-    private func compareNames(_ lhs: NodeInfo, _ rhs: NodeInfo, ascending: Bool) -> Bool {
-        let comparison = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
-        if comparison == .orderedSame {
-            let lhsID = lhs.id.uuidString
-            let rhsID = rhs.id.uuidString
-            if ascending {
-                return lhsID < rhsID
-            } else {
-                return lhsID > rhsID
-            }
-        }
-        if ascending {
-            return comparison == .orderedAscending
-        } else {
-            return comparison == .orderedDescending
-        }
-    }
-
-    private enum Column {
-        static let name: CGFloat = 220
-        static let warnings: CGFloat = 80
-        static let cpu: CGFloat = 140
-        static let memory: CGFloat = 160
-        static let disk: CGFloat = 120
-        static let taints: CGFloat = 200
-        static let version: CGFloat = 120
-        static let age: CGFloat = 80
-        static let conditions: CGFloat = 220
-        static let actions: CGFloat = 60
-    }
-}
-
-private struct NodeInlineErrorView: View {
-    let feedback: NodeActionFeedback
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Color.orange)
-            Text(feedback.message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-            Spacer(minLength: 0)
-        }
-        .padding(8)
-        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
 private struct NamespacesSection: View {
     let isConnected: Bool
     let namespaces: [Namespace]
@@ -10440,60 +9778,4 @@ private struct NamespaceRow: View {
                 .foregroundStyle(color)
         }
     }
-}
-
-private struct PlaceholderSection: View {
-    let title: String
-    let message: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
-            Text(message)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-}
-
-private enum PercentageFormatter {
-    static func format(_ value: Double?) -> String {
-        guard let value else { return "–" }
-        return NumberFormatter.percentFormatter.string(from: NSNumber(value: value)) ?? "–"
-    }
-}
-
-private enum DataRateFormatter {
-    static func format(_ value: Double?) -> String {
-        guard let value, value.isFinite else { return "–" }
-        let units: [String] = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
-        var rate = value
-        var index = 0
-        while rate >= 1024, index < units.count - 1 {
-            rate /= 1024
-            index += 1
-        }
-        let formatted = NumberFormatter.dataRateFormatter.string(from: NSNumber(value: rate)) ?? String(format: "%.1f", rate)
-        return "\(formatted) \(units[index])"
-    }
-}
-
-private extension NumberFormatter {
-    static let percentFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .percent
-        formatter.maximumFractionDigits = 0
-        return formatter
-    }()
-    static let dataRateFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = 1
-        return formatter
-    }()
 }

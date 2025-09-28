@@ -35,13 +35,6 @@ struct KubexApp: App {
                 .disabled(!appModel.isQuickSearchPresented && (appModel.selectedCluster?.isConnected != true))
             }
         }
-        MenuBarExtra(isInserted: .constant(true)) {
-            MenuBarStatusView()
-                .environmentObject(appModel)
-        } label: {
-            Image(nsImage: KubexApp.menuBarIcon)
-                .renderingMode(.original)
-        }
     }
 
     private func handleCommandLineArguments() {
@@ -70,7 +63,6 @@ struct KubexApp: App {
 }
 
 private extension KubexApp {
-    static let menuBarIcon: NSImage = loadModuleImage(named: "MenuBarIcon")
     static let appIcon: NSImage = loadModuleImage(named: "AppIcon")
 
     static func loadModuleImage(named name: String) -> NSImage {
