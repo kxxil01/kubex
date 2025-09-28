@@ -70,69 +70,25 @@ struct KubexApp: App {
 }
 
 private extension KubexApp {
-    static let menuBarIcon: NSImage = {
-        let size = CGSize(width: 22, height: 22)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        defer { image.unlockFocus() }
+    static let menuBarIcon: NSImage = loadModuleImage(named: "MenuBarIcon")
+    static let appIcon: NSImage = loadModuleImage(named: "AppIcon")
 
-        let rect = CGRect(origin: .zero, size: size)
-        let path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-        NSColor.systemBlue.setFill()
-        path.fill()
+    static func loadModuleImage(named name: String) -> NSImage {
+        if let asset = Bundle.module.image(forResource: NSImage.Name(name)) {
+            return asset
+        }
 
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        let font = NSFont.boldSystemFont(ofSize: 11)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph
-        ]
-        let text = "KBX" as NSString
-        let textSize = text.size(withAttributes: attributes)
-        let textRect = CGRect(
-            x: (size.width - textSize.width) / 2,
-            y: (size.height - textSize.height) / 2,
-            width: textSize.width,
-            height: textSize.height
-        )
-        text.draw(in: textRect, withAttributes: attributes)
+        if let url = Bundle.module.url(forResource: "Icons/\(name)", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
 
-        image.isTemplate = false
-        return image
-    }()
-
-    static let appIcon: NSImage = {
-        let size = CGSize(width: 512, height: 512)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        defer { image.unlockFocus() }
-
-        let rect = CGRect(origin: .zero, size: size)
-        let path = NSBezierPath(roundedRect: rect, xRadius: 96, yRadius: 96)
-        NSColor(calibratedRed: 0.12, green: 0.36, blue: 0.82, alpha: 1).setFill()
-        path.fill()
-
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        let font = NSFont.boldSystemFont(ofSize: 220)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph
-        ]
-        let text = "KBX" as NSString
-        let textSize = text.size(withAttributes: attributes)
-        let textRect = CGRect(
-            x: (size.width - textSize.width) / 2,
-            y: (size.height - textSize.height) / 2,
-            width: textSize.width,
-            height: textSize.height
-        )
-        text.draw(in: textRect, withAttributes: attributes)
-
-        image.isTemplate = false
-        return image
-    }()
+        // Fallback to a simple system placeholder if the asset is missing.
+        let fallback = NSImage(size: NSSize(width: 64, height: 64))
+        fallback.lockFocus()
+        NSColor.systemGray.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: fallback.size)).fill()
+        fallback.unlockFocus()
+        return fallback
+    }
 }

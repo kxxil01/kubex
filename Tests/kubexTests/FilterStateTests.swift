@@ -166,7 +166,8 @@ func sortAndFilterPersistence() async {
         execService: MockExecService(),
         portForwardService: MockPortForwardService(),
         editService: MockEditService(),
-        helmService: MockHelmService(releases: [])
+        helmService: MockHelmService(releases: []),
+        telemetryService: NoopTelemetryService()
     )
 
     await firstModel.refreshClusters()
@@ -186,7 +187,8 @@ func sortAndFilterPersistence() async {
         execService: MockExecService(),
         portForwardService: MockPortForwardService(),
         editService: MockEditService(),
-        helmService: MockHelmService(releases: [])
+        helmService: MockHelmService(releases: []),
+        telemetryService: NoopTelemetryService()
     )
 
     #expect(secondModel.workloadSortOption.field == .age)

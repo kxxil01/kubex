@@ -16,7 +16,10 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "kubex"
+            name: "kubex",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "kubexTests",

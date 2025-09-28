@@ -20,7 +20,8 @@ private func prepareQuickSearchModel(clusterIndex: Int = 0) async -> AppModel? {
         execService: MockExecService(),
         portForwardService: MockPortForwardService(),
         editService: MockEditService(),
-        helmService: MockHelmService(releases: MockClusterService.sampleClusters.flatMap { $0.helmReleases })
+        helmService: MockHelmService(releases: MockClusterService.sampleClusters.flatMap { $0.helmReleases }),
+        telemetryService: NoopTelemetryService()
     )
 
     await model.refreshClusters()

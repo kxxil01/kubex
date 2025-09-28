@@ -10,7 +10,8 @@ private func makeModel() -> AppModel {
         execService: MockExecService(),
         portForwardService: MockPortForwardService(),
         editService: MockEditService(),
-        helmService: MockHelmService(releases: [])
+        helmService: MockHelmService(releases: []),
+        telemetryService: NoopTelemetryService()
     )
 }
 

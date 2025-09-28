@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 protocol HelmService: Sendable {
     func listReleases(contextName: String) async throws -> [HelmRelease]
@@ -45,18 +46,29 @@ struct HelmCLIService: HelmService {
                     let output = String(data: stdoutData, encoding: .utf8) ?? ""
                     continuation.resume(returning: output)
                 } else {
-                    let message = String(data: stderrData, encoding: .utf8) ?? "helm command failed"
-                    continuation.resume(throwing: KubectlError(message: message.trimmingCharacters(in: .whitespacesAndNewlines)))
+                    let rawMessage = String(data: stderrData, encoding: .utf8) ?? "helm command failed"
+                    let trimmed = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.localizedCaseInsensitiveContains("no such file or directory") {
+                        continuation.resume(throwing: KubectlError(message: Self.missingHelmMessage))
+                    } else {
+                        continuation.resume(throwing: KubectlError(message: trimmed))
+                    }
                 }
             }
 
             do {
                 try process.run()
             } catch {
-                continuation.resume(throwing: KubectlError(message: error.localizedDescription))
+                if let nsError = error as NSError?, nsError.domain == NSPOSIXErrorDomain && nsError.code == ENOENT {
+                    continuation.resume(throwing: KubectlError(message: Self.missingHelmMessage))
+                } else {
+                    continuation.resume(throwing: KubectlError(message: error.localizedDescription))
+                }
             }
         }
     }
+
+    private static let missingHelmMessage = "Helm CLI not found. Install Helm (https://helm.sh/docs/intro/install/) and ensure it is available in your PATH."
 
     private static func decodeHelmDate(from decoder: Decoder) throws -> Date {
         let container = try decoder.singleValueContainer()

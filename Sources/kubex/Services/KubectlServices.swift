@@ -1156,8 +1156,15 @@ final class KubectlClusterService: ClusterService {
             let desired = item.spec?.replicas ?? item.status?.replicas ?? 0
             let ready = item.status?.readyReplicas ?? 0
             let creationDate = item.metadata.creationTimestamp.flatMap { isoFormatter.date(from: $0) }
+            let identifier = StableIdentifier.uuid(
+                metadataUID: item.metadata.uid,
+                context: contextName,
+                namespace: namespace,
+                kind: WorkloadKind.deployment.rawValue,
+                name: item.metadata.name
+            )
             return WorkloadSummary(
-                id: UUID(),
+                id: identifier,
                 name: item.metadata.name,
                 kind: .deployment,
                 replicas: desired,
@@ -1178,8 +1185,15 @@ final class KubectlClusterService: ClusterService {
             let desired = item.spec?.replicas ?? item.status?.replicas ?? 0
             let ready = item.status?.readyReplicas ?? 0
             let creationDate = item.metadata.creationTimestamp.flatMap { isoFormatter.date(from: $0) }
+            let identifier = StableIdentifier.uuid(
+                metadataUID: item.metadata.uid,
+                context: contextName,
+                namespace: namespace,
+                kind: WorkloadKind.statefulSet.rawValue,
+                name: item.metadata.name
+            )
             return WorkloadSummary(
-                id: UUID(),
+                id: identifier,
                 name: item.metadata.name,
                 kind: .statefulSet,
                 replicas: desired,
@@ -1200,8 +1214,15 @@ final class KubectlClusterService: ClusterService {
             let desired = item.status?.desiredNumberScheduled ?? 0
             let ready = item.status?.numberReady ?? 0
             let creationDate = item.metadata.creationTimestamp.flatMap { isoFormatter.date(from: $0) }
+            let identifier = StableIdentifier.uuid(
+                metadataUID: item.metadata.uid,
+                context: contextName,
+                namespace: namespace,
+                kind: WorkloadKind.daemonSet.rawValue,
+                name: item.metadata.name
+            )
             return WorkloadSummary(
-                id: UUID(),
+                id: identifier,
                 name: item.metadata.name,
                 kind: .daemonSet,
                 replicas: desired,
@@ -1221,8 +1242,15 @@ final class KubectlClusterService: ClusterService {
         return list.items.map { item in
             let creationDate = item.metadata.creationTimestamp.flatMap { isoFormatter.date(from: $0) }
             let suspended = item.spec?.suspend ?? false
+            let identifier = StableIdentifier.uuid(
+                metadataUID: item.metadata.uid,
+                context: contextName,
+                namespace: namespace,
+                kind: WorkloadKind.cronJob.rawValue,
+                name: item.metadata.name
+            )
             return WorkloadSummary(
-                id: UUID(),
+                id: identifier,
                 name: item.metadata.name,
                 kind: .cronJob,
                 replicas: 0,
@@ -1243,8 +1271,15 @@ final class KubectlClusterService: ClusterService {
             let desired = item.spec?.replicas ?? item.status?.replicas ?? 0
             let ready = item.status?.readyReplicas ?? 0
             let creationDate = item.metadata.creationTimestamp.flatMap { isoFormatter.date(from: $0) }
+            let identifier = StableIdentifier.uuid(
+                metadataUID: item.metadata.uid,
+                context: contextName,
+                namespace: namespace,
+                kind: WorkloadKind.replicaSet.rawValue,
+                name: item.metadata.name
+            )
             return WorkloadSummary(
-                id: UUID(),
+                id: identifier,
                 name: item.metadata.name,
                 kind: .replicaSet,
                 replicas: desired,
@@ -1265,8 +1300,15 @@ final class KubectlClusterService: ClusterService {
             let desired = item.spec?.replicas ?? item.status?.replicas ?? 0
             let ready = item.status?.readyReplicas ?? 0
             let creationDate = item.metadata.creationTimestamp.flatMap { isoFormatter.date(from: $0) }
+            let identifier = StableIdentifier.uuid(
+                metadataUID: item.metadata.uid,
+                context: contextName,
+                namespace: namespace,
+                kind: WorkloadKind.replicationController.rawValue,
+                name: item.metadata.name
+            )
             return WorkloadSummary(
-                id: UUID(),
+                id: identifier,
                 name: item.metadata.name,
                 kind: .replicationController,
                 replicas: desired,
@@ -1299,8 +1341,15 @@ final class KubectlClusterService: ClusterService {
                 status = .degraded
             }
 
+            let identifier = StableIdentifier.uuid(
+                metadataUID: item.metadata.uid,
+                context: contextName,
+                namespace: namespace,
+                kind: WorkloadKind.job.rawValue,
+                name: item.metadata.name
+            )
             return WorkloadSummary(
-                id: UUID(),
+                id: identifier,
                 name: item.metadata.name,
                 kind: .job,
                 replicas: succeeded + active,
@@ -1331,11 +1380,21 @@ final class KubectlClusterService: ClusterService {
                     return protocolString.isEmpty ? portNum : "\(portNum)/\(protocolString)"
                 }.joined(separator: ", ")
                 let clusterIP = item.spec.clusterIP ?? "—"
+                let externalIPs = item.spec.externalIPs ?? []
+                let loadBalancerIngress = item.status?.loadBalancer?.ingress ?? []
+                let loadBalancerHosts = loadBalancerIngress.compactMap { ingress -> String? in
+                    let value = ingress.hostname?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return value?.isEmpty == false ? value : nil
+                }
+                let loadBalancerIPs = loadBalancerIngress.compactMap { ingress -> String? in
+                    let value = ingress.ip?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return value?.isEmpty == false ? value : nil
+                }
                 let endpointStatus = endpointMap[item.metadata.name] ?? ServiceEndpointStatus(ready: [], notReady: [])
                 let combinedTargets = Array(Set(endpointStatus.ready + endpointStatus.notReady)).sorted()
                 var summary = ServiceSummary(
                     name: item.metadata.name,
-                    type: item.spec.type ?? "ClusterIP",
+                    type: (item.spec.type ?? "ClusterIP"),
                     clusterIP: clusterIP,
                     ports: ports.isEmpty ? "—" : ports,
                     age: creationDate.map(EventAge.from),
@@ -1347,6 +1406,8 @@ final class KubectlClusterService: ClusterService {
                 summary.notReadyEndpointCount = endpointStatus.notReady.count
                 summary.readyPods = endpointStatus.ready
                 summary.notReadyPods = endpointStatus.notReady
+                summary.externalIPs = externalIPs + loadBalancerIPs
+                summary.loadBalancerAddresses = loadBalancerHosts
                 return summary
             }
         } catch {
@@ -1602,8 +1663,15 @@ final class KubectlClusterService: ClusterService {
             let diskUsageDisplay = formatPodDiskDisplay(usage: diskUsageBytes, request: resourceTotals.storageRequest, limit: resourceTotals.storageLimit)
             let diskRatio = computeUsageRatio(usage: diskUsageBytes, request: resourceTotals.storageRequest, limit: resourceTotals.storageLimit)
 
+            let identifier = StableIdentifier.uuid(
+                metadataUID: item.metadata.uid,
+                context: contextName,
+                namespace: namespaceName,
+                kind: "pod",
+                name: item.metadata.name
+            )
             return PodSummary(
-                id: UUID(),
+                id: identifier,
                 name: item.metadata.name,
                 namespace: namespaceName,
                 phase: PodPhase(rawValue: item.status?.phase?.lowercased() ?? "unknown") ?? .unknown,
@@ -3763,9 +3831,21 @@ private struct KubectlServiceList: Decodable {
             let clusterIP: String?
             let ports: [Port]
             let selector: [String: String]?
+            let externalIPs: [String]?
+        }
+        struct Status: Decodable {
+            struct LoadBalancer: Decodable {
+                struct Ingress: Decodable {
+                    let ip: String?
+                    let hostname: String?
+                }
+                let ingress: [Ingress]?
+            }
+            let loadBalancer: LoadBalancer?
         }
         let metadata: Metadata
         let spec: Spec
+        let status: Status?
     }
     let items: [Item]
 }

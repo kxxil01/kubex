@@ -1,4 +1,14 @@
 import SwiftUI
+
+private struct PendingPodFocus: Equatable {
+    let namespaceID: Namespace.ID
+    let podID: PodSummary.ID
+    let tabValue: String
+
+    func resolvedTab() -> ClusterDetailView.PodInspectorTab {
+        ClusterDetailView.PodInspectorTab(rawValue: tabValue) ?? .summary
+    }
+}
 import Charts
 
 struct ClusterDetailView: View {
@@ -15,10 +25,22 @@ struct ClusterDetailView: View {
         case workloadsReplicationControllers
         case workloadsJobs
         case workloadsCronJobs
-        case config
+        case configConfigMaps
+        case configSecrets
+        case configResourceQuotas
+        case configLimitRanges
+        case configHPAs
+        case configPodDisruptionBudgets
         case helm
-        case network
-        case storage
+        case networkServices
+        case networkEndpoints
+        case networkIngresses
+        case networkPolicies
+        case networkLoadBalancers
+        case networkPortForwards
+        case storagePersistentVolumeClaims
+        case storagePersistentVolumes
+        case storageStorageClasses
         case namespaces
         case events
         case accessControl
@@ -40,10 +62,22 @@ struct ClusterDetailView: View {
             case .workloadsReplicationControllers: return "Replication Controllers"
             case .workloadsJobs: return "Jobs"
             case .workloadsCronJobs: return "Cron Jobs"
-            case .config: return "Config"
+            case .configConfigMaps: return "ConfigMaps"
+            case .configSecrets: return "Secrets"
+            case .configResourceQuotas: return "Resource Quotas"
+            case .configLimitRanges: return "Limit Ranges"
+            case .configHPAs: return "HPAs"
+            case .configPodDisruptionBudgets: return "Pod Disruption Budgets"
             case .helm: return "Helm"
-            case .network: return "Network"
-            case .storage: return "Storage"
+            case .networkServices: return "Services"
+            case .networkEndpoints: return "Endpoints"
+            case .networkIngresses: return "Ingresses"
+            case .networkPolicies: return "Network Policies"
+            case .networkLoadBalancers: return "Load Balancers"
+            case .networkPortForwards: return "Port Forwards"
+            case .storagePersistentVolumeClaims: return "Persistent Volume Claims"
+            case .storagePersistentVolumes: return "Persistent Volumes"
+            case .storageStorageClasses: return "Storage Classes"
             case .namespaces: return "Namespaces"
             case .events: return "Events"
             case .accessControl: return "Access Control"
@@ -65,10 +99,22 @@ struct ClusterDetailView: View {
             case .workloadsReplicationControllers: return "wand.and.stars"
             case .workloadsJobs: return "clock.arrow.circlepath"
             case .workloadsCronJobs: return "calendar"
-            case .config: return "gearshape.2"
+            case .configConfigMaps: return "doc.text"
+            case .configSecrets: return "lock"
+            case .configResourceQuotas: return "dial.medium"
+            case .configLimitRanges: return "speedometer"
+            case .configHPAs: return "gauge"
+            case .configPodDisruptionBudgets: return "shield"
             case .helm: return "shippingbox"
-            case .network: return "network"
-            case .storage: return "externaldrive"
+            case .networkServices: return "switch.2"
+            case .networkEndpoints: return "point.3.filled.connected.trianglepath.dotted"
+            case .networkIngresses: return "cloud"
+            case .networkPolicies: return "shield.lefthalf.fill"
+            case .networkLoadBalancers: return "server.rack"
+            case .networkPortForwards: return "bolt.horizontal"
+            case .storagePersistentVolumeClaims: return "externaldrive"
+            case .storagePersistentVolumes: return "externaldrive.connected.to.line.below"
+            case .storageStorageClasses: return "internaldrive"
             case .namespaces: return "folders"
             case .events: return "bell"
             case .accessControl: return "lock.shield"
@@ -109,9 +155,22 @@ struct ClusterDetailView: View {
                  .workloadsReplicationControllers,
                  .workloadsJobs,
                  .workloadsCronJobs,
+                 .configConfigMaps,
+                 .configSecrets,
+                 .configResourceQuotas,
+                 .configLimitRanges,
+                 .configHPAs,
+                 .configPodDisruptionBudgets,
                  .helm,
-                 .network,
-                 .storage:
+                 .networkServices,
+                 .networkEndpoints,
+                 .networkIngresses,
+                 .networkPolicies,
+                 .networkLoadBalancers,
+                 .networkPortForwards,
+                 .storagePersistentVolumeClaims,
+                 .storagePersistentVolumes,
+                 .storageStorageClasses:
                 return true
             default:
                 return false
@@ -124,6 +183,20 @@ struct ClusterDetailView: View {
 
         var isPodFocused: Bool {
             self == .workloadsPods
+        }
+
+        var isConfigResource: Bool {
+            switch self {
+            case .configConfigMaps,
+                 .configSecrets,
+                 .configResourceQuotas,
+                 .configLimitRanges,
+                 .configHPAs,
+                 .configPodDisruptionBudgets:
+                return true
+            default:
+                return false
+            }
         }
 
         var workloadMenuTitle: String {
@@ -149,10 +222,25 @@ struct ClusterDetailView: View {
             case .overview: return .overview
             case .applications: return .applications
             case .nodes: return .nodes
-            case .config: return .config
+            case .configConfigMaps,
+                 .configSecrets,
+                 .configResourceQuotas,
+                 .configLimitRanges,
+                 .configHPAs,
+                 .configPodDisruptionBudgets:
+                return .config
             case .helm: return .helm
-            case .network: return .network
-            case .storage: return .storage
+            case .networkServices,
+                 .networkEndpoints,
+                 .networkIngresses,
+                 .networkPolicies,
+                 .networkLoadBalancers,
+                 .networkPortForwards:
+                return .network
+            case .storagePersistentVolumeClaims,
+                 .storagePersistentVolumes,
+                 .storageStorageClasses:
+                return .storage
             case .namespaces: return .namespaces
             case .events: return .events
             case .accessControl: return .accessControl
@@ -166,10 +254,10 @@ struct ClusterDetailView: View {
             case .overview: return .overview
             case .applications: return .applications
             case .nodes: return .nodes
-            case .config: return .config
+            case .config: return .configConfigMaps
             case .helm: return .helm
-            case .network: return .network
-            case .storage: return .storage
+            case .network: return .networkServices
+            case .storage: return .storagePersistentVolumeClaims
             case .namespaces: return .namespaces
             case .events: return .events
             case .accessControl: return .accessControl
@@ -192,10 +280,22 @@ struct ClusterDetailView: View {
             case .workloadsReplicationControllers: return "workloads_replicationcontrollers"
             case .workloadsJobs: return "workloads_jobs"
             case .workloadsCronJobs: return "workloads_cronjobs"
-            case .config: return "config"
+            case .configConfigMaps: return "config_configmaps"
+            case .configSecrets: return "config_secrets"
+            case .configResourceQuotas: return "config_resourcequotas"
+            case .configLimitRanges: return "config_limitranges"
+            case .configHPAs: return "config_hpas"
+            case .configPodDisruptionBudgets: return "config_pdbs"
             case .helm: return "helm"
-            case .network: return "network"
-            case .storage: return "storage"
+            case .networkServices: return "network_services"
+            case .networkEndpoints: return "network_endpoints"
+            case .networkIngresses: return "network_ingresses"
+            case .networkPolicies: return "network_policies"
+            case .networkLoadBalancers: return "network_loadbalancers"
+            case .networkPortForwards: return "network_portforwards"
+            case .storagePersistentVolumeClaims: return "storage_pvcs"
+            case .storagePersistentVolumes: return "storage_pvs"
+            case .storageStorageClasses: return "storage_storageclasses"
             case .namespaces: return "namespaces"
             case .events: return "events"
             case .accessControl: return "access_control"
@@ -217,10 +317,23 @@ struct ClusterDetailView: View {
             case "workloads_replicationcontrollers": self = .workloadsReplicationControllers
             case "workloads_jobs": self = .workloadsJobs
             case "workloads_cronjobs": self = .workloadsCronJobs
-            case "config": self = .config
+            case "config_configmaps": self = .configConfigMaps
+            case "config_secrets": self = .configSecrets
+            case "config_resourcequotas": self = .configResourceQuotas
+            case "config_limitranges": self = .configLimitRanges
+            case "config_hpas": self = .configHPAs
+            case "config_pdbs": self = .configPodDisruptionBudgets
             case "helm": self = .helm
-            case "network": self = .network
-            case "storage": self = .storage
+            case "network_services": self = .networkServices
+            case "network_endpoints": self = .networkEndpoints
+            case "network_ingresses": self = .networkIngresses
+            case "network_policies": self = .networkPolicies
+            case "network_loadbalancers": self = .networkLoadBalancers
+            case "network_portforwards": self = .networkPortForwards
+            case "storage": self = .storagePersistentVolumeClaims
+            case "storage_pvcs": self = .storagePersistentVolumeClaims
+            case "storage_pvs": self = .storagePersistentVolumes
+            case "storage_storageclasses": self = .storageStorageClasses
             case "namespaces": self = .namespaces
             case "events": self = .events
             case "access_control": self = .accessControl
@@ -232,8 +345,8 @@ struct ClusterDetailView: View {
 
     enum ResourceCategory: String, CaseIterable, Identifiable {
         case overview
-        case applications
         case nodes
+        case applications
         case workloads
         case config
         case helm
@@ -245,6 +358,21 @@ struct ClusterDetailView: View {
         case customResources
 
         var id: String { rawValue }
+
+        static let navigationOrder: [ResourceCategory] = [
+            .overview,
+            .nodes,
+            .applications,
+            .workloads,
+            .config,
+            .network,
+            .storage,
+            .namespaces,
+            .events,
+            .helm,
+            .accessControl,
+            .customResources
+        ]
 
         var menuTitle: String {
             switch self {
@@ -269,10 +397,31 @@ struct ClusterDetailView: View {
             case .applications: return [.applications]
             case .nodes: return [.nodes]
             case .workloads: return Tab.workloadTabs
-            case .config: return [.config]
+            case .config:
+                return [
+                    .configConfigMaps,
+                    .configSecrets,
+                    .configResourceQuotas,
+                    .configLimitRanges,
+                    .configHPAs,
+                    .configPodDisruptionBudgets
+                ]
             case .helm: return [.helm]
-            case .network: return [.network]
-            case .storage: return [.storage]
+            case .network:
+                return [
+                    .networkServices,
+                    .networkEndpoints,
+                    .networkIngresses,
+                    .networkPolicies,
+                    .networkLoadBalancers,
+                    .networkPortForwards
+                ]
+            case .storage:
+                return [
+                    .storagePersistentVolumeClaims,
+                    .storagePersistentVolumes,
+                    .storageStorageClasses
+                ]
             case .namespaces: return [.namespaces]
             case .events: return [.events]
             case .accessControl: return [.accessControl]
@@ -283,21 +432,33 @@ struct ClusterDetailView: View {
 
     enum NetworkResourceKind: String, CaseIterable, Identifiable {
         case services
+        case endpoints
         case ingresses
+        case networkPolicies
+        case loadBalancers
+        case portForwards
 
         var id: String { rawValue }
 
         var title: String {
             switch self {
             case .services: return "Services"
+            case .endpoints: return "Endpoints"
             case .ingresses: return "Ingresses"
+            case .networkPolicies: return "Network Policies"
+            case .loadBalancers: return "Load Balancers"
+            case .portForwards: return "Port Forwards"
             }
         }
 
         var systemImage: String {
             switch self {
             case .services: return "switch.2"
+            case .endpoints: return "point.3.filled.connected.trianglepath.dotted"
             case .ingresses: return "cloud"
+            case .networkPolicies: return "shield.lefthalf.fill"
+            case .loadBalancers: return "server.rack"
+            case .portForwards: return "bolt.horizontal"
             }
         }
     }
@@ -325,17 +486,29 @@ struct ClusterDetailView: View {
     @State private var selectedIngressIDs: Set<IngressSummary.ID> = []
     @State private var selectedPVCIDs: Set<PersistentVolumeClaimSummary.ID> = []
     @State private var selectedHelmIDs: Set<HelmRelease.ID> = []
-    @State private var networkResourceFocus: NetworkResourceKind = .services
+    @State private var expandedCategories: Set<ResourceCategory> = []
     @State private var podInspectorTab: PodInspectorTab = .summary
     @State private var workloadInspectorTab: WorkloadInspectorTab = .summary
     @State private var inspectorWidth: CGFloat = 360
     @State private var inspectorDragBaseline: CGFloat?
     @State private var pendingQuickSearchTarget: AppModel.QuickSearchTarget?
+    @State private var pendingPodFocus: PendingPodFocus?
 
     private var isConnected: Bool { cluster.isConnected }
     private let inspectorMinimumWidth: CGFloat = 320
     private let inspectorMaximumWidth: CGFloat = 600
-    private let inspectorOverlayHeight: CGFloat = 360
+
+    private var currentNetworkFocus: NetworkResourceKind? {
+        switch selectedTab {
+        case .networkServices: return .services
+        case .networkEndpoints: return .endpoints
+        case .networkIngresses: return .ingresses
+        case .networkPolicies: return .networkPolicies
+        case .networkLoadBalancers: return .loadBalancers
+        case .networkPortForwards: return .portForwards
+        default: return nil
+        }
+    }
 
     private var nodeSortBinding: Binding<NodeSortOption> {
         Binding(
@@ -385,9 +558,7 @@ struct ClusterDetailView: View {
         return namespace.pods.first(where: { $0.id == selectedPodID })
     }
 
-    private var inspectorBottomInset: CGFloat {
-        inspectorSelectionForCluster == .none ? 0 : inspectorOverlayHeight
-    }
+    private var inspectorBottomInset: CGFloat { 0 }
 
     private var workloadQuickSearchFocusID: WorkloadSummary.ID? {
         guard let target = pendingQuickSearchTarget else { return nil }
@@ -562,7 +733,7 @@ struct ClusterDetailView: View {
             podFilterBar
         } else if selectedTab == .nodes {
             nodeFilterBar
-        } else if selectedTab == .config {
+        } else if selectedTab.isConfigResource {
             configFilterBar
         } else {
             EmptyView()
@@ -735,10 +906,10 @@ struct ClusterDetailView: View {
     @ViewBuilder
     private var configFilterBar: some View {
         if cluster.isConnected, namespace != nil {
-            let filter = model.configFilterState
+                let filter = model.configFilterState
             VStack(alignment: .leading, spacing: 6) {
                 let kinds = availableConfigKinds
-                if !kinds.isEmpty {
+                if !kinds.isEmpty && !selectedTab.isConfigResource {
                     HStack(spacing: 6) {
                         Text("Type")
                             .font(.caption.bold())
@@ -795,7 +966,11 @@ struct ClusterDetailView: View {
             Divider()
 
             HStack(spacing: 0) {
-                NavigationSidebar(selectedTab: $selectedTab, isConnected: isConnected)
+                NavigationSidebar(
+                    selectedTab: $selectedTab,
+                    expandedCategories: $expandedCategories,
+                    isConnected: isConnected
+                )
                     .frame(width: 200)
 
                 Divider()
@@ -812,7 +987,10 @@ struct ClusterDetailView: View {
             selectedIngressIDs.removeAll()
             selectedPVCIDs.removeAll()
             selectedHelmIDs.removeAll()
-            syncInspectorSelection()
+            if pendingPodFocus == nil {
+                syncInspectorSelection()
+            }
+            applyPendingPodFocusIfPossible()
         }
         .onChange(of: selectedPodID) { _, newValue in
             if newValue == nil {
@@ -820,6 +998,7 @@ struct ClusterDetailView: View {
             }
         }
         .onChange(of: selectedTab) { _, newValue in
+            expandedCategories.insert(newValue.primaryCategory)
             if !newValue.isPodFocused {
                 selectedPodID = nil
                 selectedPodIDs.removeAll()
@@ -840,6 +1019,9 @@ struct ClusterDetailView: View {
                 workloadInspectorTab = .summary
             }
             syncInspectorSelection()
+        }
+        .onAppear {
+            expandedCategories.insert(selectedTab.primaryCategory)
         }
         .onChange(of: selectedPodIDs) { _, newValue in
             if let current = selectedPodID, newValue.contains(current) {
@@ -863,10 +1045,11 @@ struct ClusterDetailView: View {
         .onChange(of: selectedPVCIDs) { _, _ in
             syncInspectorSelection()
         }
-        .onChange(of: networkResourceFocus) { _, _ in
+        .onChange(of: namespace?.workloads) { _, _ in
             syncInspectorSelection()
         }
-        .onChange(of: namespace?.workloads) { _, _ in
+        .onChange(of: namespace?.pods) { _, _ in
+            applyPendingPodFocusIfPossible()
             syncInspectorSelection()
         }
         .onChange(of: model.quickSearchFocus) { _, selection in
@@ -921,17 +1104,23 @@ struct ClusterDetailView: View {
 
     @ViewBuilder
     private var resourceListLayout: some View {
-        ZStack(alignment: .bottomTrailing) {
+        let hasInspector = cluster.isConnected && inspectorSelectionForCluster != .none
+        HStack(alignment: .top, spacing: hasInspector ? 16 : 0) {
             VStack(spacing: 0) {
                 resourceListToolbar
                 Divider()
                 resourceListBody
-                    .padding(.bottom, inspectorBottomInset)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            inspectorOverlay
+            if hasInspector {
+                inspectorDock
+                    .padding(.top, 8)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.trailing, hasInspector ? 24 : 0)
+        .padding(.bottom, hasInspector ? 24 : 0)
     }
 
     private var resourceListToolbar: some View {
@@ -940,20 +1129,6 @@ struct ClusterDetailView: View {
                 TextField("Filter resources", text: $resourceSearchText)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 260)
-
-                switch selectedTab {
-                case .network:
-                    Picker("Resource", selection: $networkResourceFocus) {
-                        ForEach(NetworkResourceKind.allCases) { kind in
-                            Text(kind.title)
-                                .tag(kind)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 220)
-                default:
-                    EmptyView()
-                }
 
                 if selectedTab == .nodes {
                     nodeSortMenu
@@ -1161,6 +1336,54 @@ struct ClusterDetailView: View {
                 onDelete: { handleDelete($0) },
                 focusID: podQuickSearchFocusID
             )
+        case .configConfigMaps:
+            ConfigResourceListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                kind: .configMap,
+                filterState: model.configFilterState,
+                searchText: resourceSearchText
+            )
+        case .configSecrets:
+            ConfigResourceListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                kind: .secret,
+                filterState: model.configFilterState,
+                searchText: resourceSearchText
+            )
+        case .configResourceQuotas:
+            ConfigResourceListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                kind: .resourceQuota,
+                filterState: model.configFilterState,
+                searchText: resourceSearchText
+            )
+        case .configLimitRanges:
+            ConfigResourceListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                kind: .limitRange,
+                filterState: model.configFilterState,
+                searchText: resourceSearchText
+            )
+        case .configHPAs:
+            centeredUnavailableView(
+                "Horizontal Pod Autoscalers",
+                systemImage: "gauge",
+                description: Text("HPA details are coming soon to Kubex.")
+            )
+        case .configPodDisruptionBudgets:
+            centeredUnavailableView(
+                "Pod Disruption Budgets",
+                systemImage: "shield",
+                description: Text("PDB insights are coming soon to Kubex.")
+            )
         case .helm:
             HelmListView(
                 cluster: cluster,
@@ -1169,25 +1392,91 @@ struct ClusterDetailView: View {
                 selection: $selectedHelmIDs,
                 searchText: resourceSearchText
             )
-        case .network:
-            VStack(spacing: 20) {
-                NetworkListView(
-                    namespace: namespace,
-                    isConnected: isConnected,
-                    focus: networkResourceFocus,
-                    serviceSelection: $selectedServiceIDs,
-                    ingressSelection: $selectedIngressIDs,
-                    searchText: resourceSearchText,
-                    servicePermissions: { service in servicePermissions(for: service) },
-                    onInspectService: { handleServiceInspect($0) },
-                    onEditService: { handleServiceEdit($0) },
-                    onDeleteService: { handleServiceDelete($0) }
-                )
-
-                PortForwardDashboard(cluster: cluster, namespace: namespace)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        case .storage:
+        case .networkServices:
+            NetworkListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                focus: .services,
+                serviceSelection: $selectedServiceIDs,
+                ingressSelection: $selectedIngressIDs,
+                searchText: resourceSearchText,
+                servicePermissions: { service in servicePermissions(for: service) },
+                onInspectService: { handleServiceInspect($0) },
+                onEditService: { handleServiceEdit($0) },
+                onDeleteService: { handleServiceDelete($0) }
+            )
+        case .networkEndpoints:
+            NetworkListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                focus: .endpoints,
+                serviceSelection: $selectedServiceIDs,
+                ingressSelection: $selectedIngressIDs,
+                searchText: resourceSearchText,
+                servicePermissions: { service in servicePermissions(for: service) },
+                onInspectService: { handleServiceInspect($0) },
+                onEditService: { handleServiceEdit($0) },
+                onDeleteService: { handleServiceDelete($0) }
+            )
+        case .networkIngresses:
+            NetworkListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                focus: .ingresses,
+                serviceSelection: $selectedServiceIDs,
+                ingressSelection: $selectedIngressIDs,
+                searchText: resourceSearchText,
+                servicePermissions: { service in servicePermissions(for: service) },
+                onInspectService: { handleServiceInspect($0) },
+                onEditService: { handleServiceEdit($0) },
+                onDeleteService: { handleServiceDelete($0) }
+            )
+        case .networkPolicies:
+            NetworkListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                focus: .networkPolicies,
+                serviceSelection: $selectedServiceIDs,
+                ingressSelection: $selectedIngressIDs,
+                searchText: resourceSearchText,
+                servicePermissions: { service in servicePermissions(for: service) },
+                onInspectService: { handleServiceInspect($0) },
+                onEditService: { handleServiceEdit($0) },
+                onDeleteService: { handleServiceDelete($0) }
+            )
+        case .networkLoadBalancers:
+            NetworkListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                focus: .loadBalancers,
+                serviceSelection: $selectedServiceIDs,
+                ingressSelection: $selectedIngressIDs,
+                searchText: resourceSearchText,
+                servicePermissions: { service in servicePermissions(for: service) },
+                onInspectService: { handleServiceInspect($0) },
+                onEditService: { handleServiceEdit($0) },
+                onDeleteService: { handleServiceDelete($0) }
+            )
+        case .networkPortForwards:
+            NetworkListView(
+                cluster: cluster,
+                namespace: namespace,
+                isConnected: isConnected,
+                focus: .portForwards,
+                serviceSelection: $selectedServiceIDs,
+                ingressSelection: $selectedIngressIDs,
+                searchText: resourceSearchText,
+                servicePermissions: { service in servicePermissions(for: service) },
+                onInspectService: { handleServiceInspect($0) },
+                onEditService: { handleServiceEdit($0) },
+                onDeleteService: { handleServiceDelete($0) }
+            )
+        case .storagePersistentVolumeClaims:
             StorageListView(
                 namespace: namespace,
                 isConnected: isConnected,
@@ -1198,22 +1487,34 @@ struct ClusterDetailView: View {
                 onEditClaim: { handlePVCEdit($0) },
                 onDeleteClaim: { handlePVCDelete($0) }
             )
+        case .storagePersistentVolumes:
+            centeredUnavailableView(
+                "Persistent Volumes",
+                systemImage: "externaldrive.connected.to.line.below",
+                description: Text("Cluster-scoped PVs will appear here once data wiring is complete.")
+            )
+        case .storageStorageClasses:
+            centeredUnavailableView(
+                "Storage Classes",
+                systemImage: "internaldrive",
+                description: Text("Storage classes will surface here in a future update.")
+            )
         default:
             Color.clear
         }
     }
 
     @ViewBuilder
-    private var inspectorOverlay: some View {
+    private var inspectorDock: some View {
         let selection = inspectorSelectionForCluster
-        if cluster.isConnected, selection != .none {
+        ZStack(alignment: .topTrailing) {
             HStack(spacing: 0) {
                 inspectorResizeHandle
                 ResourceInspector(
                     cluster: cluster,
                     namespace: namespace,
                     selectedTab: selectedTab,
-                    networkFocus: networkResourceFocus,
+                    networkFocus: currentNetworkFocus ?? .services,
                     onFocusPods: { focusPods(for: $0) },
                     podActions: PodInspectorActions(
                         onPortForward: { handlePortForward($0) },
@@ -1231,8 +1532,18 @@ struct ClusterDetailView: View {
             .padding(.horizontal, 16)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .shadow(color: Color.black.opacity(0.2), radius: 12, x: 0, y: 6)
-            .padding(.trailing, 24)
-            .padding(.bottom, 24)
+
+            Button {
+                closeInspector()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(Color.white.opacity(0.95), Color.black.opacity(0.25))
+                    .padding(6)
+            }
+            .buttonStyle(.plain)
+            .offset(x: 8, y: -8)
         }
     }
 
@@ -1317,36 +1628,41 @@ private struct PodExecPane: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var controlRow: some View {
-        HStack(spacing: 10) {
-            containerPicker
-            TextField("Command", text: $command, prompt: Text("ls -lah /"))
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(runCommand)
-                .disabled(isRunning || !canExec)
-                .font(.system(.body, design: .monospaced))
-                .frame(minWidth: 220)
-            Button {
-                runCommand()
-            } label: {
-                Label("Run", systemImage: "play.fill")
-                    .labelStyle(.titleAndIcon)
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    containerPicker
+                    TextField("Command", text: $command, prompt: Text("ls -lah /"))
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(runCommand)
+                        .disabled(isRunning || !canExec)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minWidth: 220)
+                        .frame(maxWidth: .infinity)
+                    Button {
+                        runCommand()
+                    } label: {
+                        Label("Run", systemImage: "play.fill")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: [.command])
+                    .disabled(isRunning || command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canExec)
+                    .help(!canExec ? (execReason ?? "Requires pods/exec permission.") : "Execute command inside the container.")
+                    Button("Clear") { entries.removeAll() }
+                        .disabled(entries.isEmpty)
+                    if isRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Spacer(minLength: 0)
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.return, modifiers: [.command])
-            .disabled(isRunning || command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canExec)
-            .help(!canExec ? (execReason ?? "Requires pods/exec permission.") : "Execute command inside the container.")
-
-            Button("Clear") { entries.removeAll() }
-                .disabled(entries.isEmpty)
-
-            if isRunning {
-                ProgressView()
-                    .controlSize(.small)
-            }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -1406,7 +1722,9 @@ private struct PodExecPane: View {
                     }
                 }
                 .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity)
             .background(Color(nsColor: .underPageBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .frame(maxWidth: .infinity, minHeight: 220, alignment: .leading)
             .onChange(of: entries.count) { _, _ in
@@ -1483,7 +1801,7 @@ private struct PodExecPane: View {
     }
 }
 
-private enum PodInspectorTab: String, CaseIterable, Identifiable {
+fileprivate enum PodInspectorTab: String, CaseIterable, Identifiable {
     case summary
     case logs
     case exec
@@ -1497,6 +1815,15 @@ private enum PodInspectorTab: String, CaseIterable, Identifiable {
         case .logs: return "Logs"
         case .exec: return "Exec"
         case .yaml: return "YAML"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .summary: return "square.grid.2x2"
+        case .logs: return "text.justifyleft"
+        case .exec: return "terminal"
+        case .yaml: return "doc.plaintext"
         }
     }
 }
@@ -1651,13 +1978,29 @@ private struct PodInspectorView: View {
         return (warnings, errors)
     }
     private var availableTabs: [PodInspectorTab] {
-        PodInspectorTab.allCases.filter { tab in
-            switch tab {
-            case .logs: return canViewLogs
-            case .exec: return canExec
-            case .yaml: return canViewYaml
-            default: return true
-            }
+        PodInspectorTab.allCases.filter { isTabEnabled($0) }
+    }
+
+    private func isTabEnabled(_ tab: PodInspectorTab) -> Bool {
+        switch tab {
+        case .logs: return canViewLogs
+        case .exec: return canExec
+        case .yaml: return canViewYaml
+        case .summary: return true
+        }
+    }
+
+    private func permissionTip(for tab: PodInspectorTab) -> String? {
+        guard !isTabEnabled(tab) else { return nil }
+        switch tab {
+        case .logs:
+            return permissionHelp(.viewPodLogs, fallback: "Requires pods/log permission.")
+        case .exec:
+            return permissionHelp(.execPods, fallback: "Requires pods/exec permission.")
+        case .yaml:
+            return permissionHelp(.getPods, fallback: "Requires get pods permission.")
+        case .summary:
+            return nil
         }
     }
 
@@ -1667,15 +2010,9 @@ private struct PodInspectorView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             header
             actionToolbar
-            Picker("", selection: $tab) {
-                ForEach(availableTabs) { tab in
-                    Text(tab.title).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
 
             Divider()
 
@@ -1702,7 +2039,7 @@ private struct PodInspectorView: View {
                     .environmentObject(model)
                     .frame(minHeight: 260)
                 } else {
-                    ContentUnavailableView(
+                    centeredUnavailableView(
                         "Logs unavailable",
                         systemImage: "lock",
                         description: Text("You do not have permission to view pod logs.")
@@ -1719,7 +2056,7 @@ private struct PodInspectorView: View {
                     .environmentObject(model)
                     .frame(minHeight: 260)
                 } else {
-                    ContentUnavailableView(
+                    centeredUnavailableView(
                         "Exec unavailable",
                         systemImage: "hand.raised",
                         description: Text("Your RBAC policy blocks creating pods/exec sessions.")
@@ -1730,7 +2067,7 @@ private struct PodInspectorView: View {
                 if canViewYaml {
                     yamlContent
                 } else {
-                    ContentUnavailableView(
+                    centeredUnavailableView(
                         "YAML unavailable",
                         systemImage: "doc",
                         description: Text("You do not have permission to retrieve this pod manifest.")
@@ -1776,7 +2113,7 @@ private struct PodInspectorView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("Pod · \(pod.name)")
                 .font(.headline)
                 .lineLimit(1)
@@ -1808,30 +2145,12 @@ private struct PodInspectorView: View {
                     }
                 }
             }
+            inspectorTabPicker
         }
     }
 
     private var actionToolbar: some View {
         HStack(spacing: 12) {
-            Button { tab = .summary } label: {
-                Label("Summary", systemImage: "square.grid.2x2")
-            }
-            Button { tab = .logs } label: {
-                Label("Logs", systemImage: "text.justifyleft")
-            }
-            .disabled(!canViewLogs)
-            .optionalHelp(permissionHelp(.viewPodLogs, fallback: "Requires pods/log permission."))
-            Button { tab = .exec } label: {
-                Label("Exec", systemImage: "terminal")
-            }
-            .disabled(!canExec)
-            .optionalHelp(permissionHelp(.execPods, fallback: "Requires pods/exec permission."))
-            Button { tab = .yaml } label: {
-                Label("YAML", systemImage: "doc.plaintext")
-            }
-            .disabled(!canViewYaml)
-            .optionalHelp(permissionHelp(.getPods, fallback: "Requires get pods permission."))
-
             Spacer()
 
             Button { actions.onPortForward(pod) } label: {
@@ -1857,6 +2176,21 @@ private struct PodInspectorView: View {
         }
         .labelStyle(.titleAndIcon)
         .font(.caption)
+    }
+
+    private var inspectorTabPicker: some View {
+        Picker("", selection: $tab) {
+            ForEach(PodInspectorTab.allCases) { candidate in
+                Label(candidate.title, systemImage: candidate.systemImage)
+                    .tag(candidate)
+                    .disabled(!isTabEnabled(candidate))
+                    .opacity(isTabEnabled(candidate) ? 1 : 0.35)
+                    .optionalHelp(permissionTip(for: candidate))
+            }
+        }
+        .pickerStyle(.segmented)
+        .controlSize(.small)
+        .labelsHidden()
     }
 
     private var yamlContent: some View {
@@ -2717,7 +3051,7 @@ private struct WorkloadRolloutPane: View {
     private var podsSection: some View {
         SectionBox(title: "Pods (\(pods.count))") {
             if pods.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Pods",
                     systemImage: "circle.grid.3x3",
                     description: Text("Pods managed by this workload will appear when the rollout starts.")
@@ -3415,7 +3749,7 @@ private struct ResourceInspector: View {
         }
 
         private func placeholder(title: String, message: String) -> some View {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 title,
                 systemImage: "rectangle.dashed",
                 description: Text(message)
@@ -3427,15 +3761,32 @@ private struct ResourceInspector: View {
             switch selectedTab {
             case .helm:
                 return "Select a Helm release to preview metadata."
-            case .network:
+            case .networkServices,
+                 .networkEndpoints,
+                 .networkIngresses,
+                 .networkPolicies,
+                 .networkLoadBalancers,
+                 .networkPortForwards:
                 switch networkFocus {
                 case .services:
                     return "Select a service to view endpoints and ports."
+                case .endpoints:
+                    return "Review endpoints to verify service-to-pod mappings."
                 case .ingresses:
                     return "Select an ingress to inspect host rules."
+                case .networkPolicies:
+                    return "Inspect network policies controlling pod traffic."
+                case .loadBalancers:
+                    return "Select a load balancer to review external endpoints."
+                case .portForwards:
+                    return "Review active port forwards or start a new session from the pod inspector."
                 }
-            case .storage:
+            case .storagePersistentVolumeClaims:
                 return "Select a persistent volume claim to view capacity and binding details."
+            case .storagePersistentVolumes:
+                return "Persistent volumes summary coming soon."
+            case .storageStorageClasses:
+                return "Storage class coverage is coming soon."
             case .workloadsPods:
                 return "Select a pod to inspect status, metrics, and events."
             case .applications, .workloadsOverview, .workloadsDeployments, .workloadsDaemonSets, .workloadsStatefulSets, .workloadsReplicaSets, .workloadsReplicationControllers, .workloadsJobs, .workloadsCronJobs:
@@ -3772,8 +4123,23 @@ private struct ResourceInspector: View {
                 onEdit: { handleNodeEdit($0) },
                 onDelete: { handleNodeDelete($0) }
             )
-        case .config:
-            ConfigSection(cluster: cluster, namespace: namespace, isConnected: isConnected, filterState: model.configFilterState)
+        case .configConfigMaps,
+             .configSecrets,
+             .configResourceQuotas,
+             .configLimitRanges,
+             .configHPAs,
+             .configPodDisruptionBudgets,
+             .helm,
+             .networkServices,
+             .networkEndpoints,
+             .networkIngresses,
+             .networkPolicies,
+             .networkLoadBalancers,
+             .networkPortForwards,
+             .storagePersistentVolumeClaims,
+             .storagePersistentVolumes,
+             .storageStorageClasses:
+            EmptyView()
         case .namespaces:
             let namespaces = model.currentNamespaces ?? []
             NamespacesSection(
@@ -3849,12 +4215,12 @@ extension ClusterDetailView {
             }
             model.setInspectorSelection(.helm(clusterID: cluster.id, releaseID: releaseID))
 
-        case .network:
-            guard let namespace else {
+        case .networkServices, .networkEndpoints, .networkIngresses, .networkPolicies, .networkLoadBalancers, .networkPortForwards:
+            guard let namespace, let focus = currentNetworkFocus else {
                 model.clearInspectorSelection()
                 return
             }
-            switch networkResourceFocus {
+            switch focus {
             case .services:
                 guard let serviceID = selectedServiceIDs.first else {
                     model.clearInspectorSelection()
@@ -3867,6 +4233,8 @@ extension ClusterDetailView {
                         serviceID: serviceID
                     )
                 )
+            case .endpoints:
+                model.clearInspectorSelection()
             case .ingresses:
                 guard let ingressID = selectedIngressIDs.first else {
                     model.clearInspectorSelection()
@@ -3879,9 +4247,25 @@ extension ClusterDetailView {
                         ingressID: ingressID
                     )
                 )
+            case .networkPolicies:
+                model.clearInspectorSelection()
+            case .loadBalancers:
+                guard let serviceID = selectedServiceIDs.first else {
+                    model.clearInspectorSelection()
+                    return
+                }
+                model.setInspectorSelection(
+                    .service(
+                        clusterID: cluster.id,
+                        namespaceID: namespace.id,
+                        serviceID: serviceID
+                    )
+                )
+            case .portForwards:
+                model.clearInspectorSelection()
             }
 
-        case .storage:
+        case .storagePersistentVolumeClaims:
             guard let namespace, let claimID = selectedPVCIDs.first else {
                 model.clearInspectorSelection()
                 return
@@ -3893,6 +4277,10 @@ extension ClusterDetailView {
                     claimID: claimID
                 )
             )
+
+        case .storagePersistentVolumes,
+             .storageStorageClasses:
+            model.clearInspectorSelection()
 
         default:
             model.clearInspectorSelection()
@@ -4006,8 +4394,7 @@ extension ClusterDetailView {
     private func handleServiceInspect(_ service: ServiceSummary) {
         guard let sourceNamespace = namespace(forService: service) else { return }
         model.selectedNamespaceID = sourceNamespace.id
-        selectedTab = .network
-        networkResourceFocus = .services
+        selectedTab = .networkServices
         selectedServiceIDs = [service.id]
         syncInspectorSelection()
     }
@@ -4039,7 +4426,7 @@ extension ClusterDetailView {
     private func handlePVCInspect(_ claim: PersistentVolumeClaimSummary) {
         guard let sourceNamespace = namespace(forPVC: claim) else { return }
         model.selectedNamespaceID = sourceNamespace.id
-        selectedTab = .storage
+        selectedTab = .storagePersistentVolumeClaims
         selectedPVCIDs = [claim.id]
         syncInspectorSelection()
     }
@@ -4070,12 +4457,73 @@ extension ClusterDetailView {
 
     private func focusPod(_ pod: PodSummary, tab: PodInspectorTab) {
         guard let sourceNamespace = namespace(forPod: pod) else { return }
-        model.selectedNamespaceID = sourceNamespace.id
-        selectedTab = .workloadsPods
-        selectedPodIDs = [pod.id]
-        selectedPodID = pod.id
         podInspectorTab = tab
+        selectedTab = .workloadsPods
+        model.setInspectorSelection(
+            .pod(
+                clusterID: cluster.id,
+                namespaceID: sourceNamespace.id,
+                podID: pod.id
+            )
+        )
+
+        let needsNamespaceSwitch = namespace?.id != sourceNamespace.id
+        if needsNamespaceSwitch {
+            pendingPodFocus = PendingPodFocus(namespaceID: sourceNamespace.id, podID: pod.id, tabValue: tab.rawValue)
+        } else {
+            pendingPodFocus = nil
+        }
+
+        model.selectedNamespaceID = sourceNamespace.id
+
+        if !needsNamespaceSwitch {
+            selectedPodIDs = [pod.id]
+            selectedPodID = pod.id
+            syncInspectorSelection()
+        } else {
+            Task { @MainActor in
+                _ = await model.loadNamespaceIfNeeded(clusterID: cluster.id, namespaceName: sourceNamespace.name)
+                applyPendingPodFocusIfPossible()
+            }
+        }
+    }
+
+    private func applyPendingPodFocusIfPossible() {
+        guard let pending = pendingPodFocus else { return }
+        let candidateNamespace: Namespace? = {
+            if let namespace, namespace.id == pending.namespaceID {
+                return namespace
+            }
+            return cluster.namespaces.first(where: { $0.id == pending.namespaceID })
+        }()
+
+        guard let targetNamespace = candidateNamespace else { return }
+        guard targetNamespace.pods.contains(where: { $0.id == pending.podID }) else { return }
+
+        selectedPodIDs = [pending.podID]
+        selectedPodID = pending.podID
+        podInspectorTab = pending.resolvedTab()
+        model.setInspectorSelection(
+            .pod(
+                clusterID: cluster.id,
+                namespaceID: targetNamespace.id,
+                podID: pending.podID
+            )
+        )
         syncInspectorSelection()
+        pendingPodFocus = nil
+    }
+
+    private func closeInspector() {
+        pendingPodFocus = nil
+        selectedPodID = nil
+        selectedPodIDs.removeAll()
+        selectedWorkloadIDs.removeAll()
+        selectedServiceIDs.removeAll()
+        selectedIngressIDs.removeAll()
+        selectedPVCIDs.removeAll()
+        selectedHelmIDs.removeAll()
+        model.clearInspectorSelection()
     }
 
     private func focusWorkload(_ workload: WorkloadSummary, tab: WorkloadInspectorTab) {
@@ -4197,23 +4645,21 @@ private extension ClusterDetailView {
             selectedHelmIDs = Set([releaseID])
 
         case let .service(_, serviceID):
-            selectedTab = .network
-            networkResourceFocus = .services
+            selectedTab = .networkServices
             selectedServiceIDs = Set([serviceID])
             selectedIngressIDs.removeAll()
 
         case let .ingress(_, ingressID):
-            selectedTab = .network
-            networkResourceFocus = .ingresses
+            selectedTab = .networkIngresses
             selectedIngressIDs = Set([ingressID])
             selectedServiceIDs.removeAll()
 
         case let .persistentVolumeClaim(_, claimID):
-            selectedTab = .storage
+            selectedTab = .storagePersistentVolumeClaims
             selectedPVCIDs = Set([claimID])
 
-        case .configResource:
-            selectedTab = .config
+        case let .configResource(kind, _, _):
+            selectedTab = configTab(for: kind)
         }
     }
 
@@ -4226,6 +4672,15 @@ private extension ClusterDetailView {
         case .replicaSet: return .workloadsReplicaSets
         case .replicationController: return .workloadsReplicationControllers
         case .job: return .workloadsJobs
+        }
+    }
+
+    func configTab(for kind: ConfigResourceKind) -> ClusterDetailView.Tab {
+        switch kind {
+        case .configMap: return .configConfigMaps
+        case .secret: return .configSecrets
+        case .resourceQuota: return .configResourceQuotas
+        case .limitRange: return .configLimitRanges
         }
     }
 
@@ -4697,7 +5152,7 @@ struct PodLogsPane: View {
             }
                 }
             } else {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Logs unavailable",
                     systemImage: "lock",
                     description: Text(deniedReason ?? "Your account lacks permission to read pod logs (pods/log).")
@@ -4924,7 +5379,7 @@ private struct SecretDetailSheet: View {
             Divider()
             permissionBanner
             if editors.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Data",
                     systemImage: "lock",
                     description: Text("This secret does not contain any key/value pairs.")
@@ -5143,7 +5598,7 @@ private struct ConfigMapDetailSheet: View {
             permissionBanner
 
             if editors.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Data",
                     systemImage: "doc.text",
                     description: Text("This ConfigMap does not contain any key/value pairs.")
@@ -5710,7 +6165,7 @@ private struct OverviewSection: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Metrics Unavailable",
                     systemImage: "waveform.path.ecg",
                     description: Text("Connect to Prometheus or metrics-server to visualize live trends.")
@@ -5931,13 +6386,13 @@ private struct WorkloadsSection: View {
 
     var body: some View {
         if !isConnected {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Not Connected",
                 systemImage: "bolt.slash",
                 description: Text("Connect to the cluster to inspect workloads.")
             )
         } else if namespace == nil {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Select a Namespace",
                 systemImage: "square.stack.3d.up",
                 description: Text("Choose a namespace from the list to view workloads.")
@@ -5951,7 +6406,7 @@ private struct WorkloadsSection: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let namespace, namespace.workloads.isEmpty {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "No Workloads",
                 systemImage: "shippingbox",
                 description: Text("Workloads will appear when the namespace has resources.")
@@ -6063,13 +6518,13 @@ private struct WorkloadListView: View {
     @ViewBuilder
     private var content: some View {
         if !isConnected {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Not Connected",
                 systemImage: "bolt.slash",
                 description: Text("Connect to the cluster to inspect workloads.")
             )
         } else if namespace == nil {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Select a Namespace",
                 systemImage: "square.stack.3d.up",
                 description: Text("Choose a namespace to view workloads.")
@@ -6084,26 +6539,26 @@ private struct WorkloadListView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         } else if baseWorkloads.isEmpty {
             let label = kind?.displayName ?? "Workloads"
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "No \(label)",
                 systemImage: "shippingbox",
                 description: Text("\(label) appear once resources are discovered in the namespace.")
             )
         } else if filteredWorkloads.isEmpty {
             if !searchTerm.isEmpty && hasActiveFilter {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Results",
                     systemImage: "magnifyingglass",
                     description: Text("No workloads match your search or filters.")
                 )
             } else if !searchTerm.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Results",
                     systemImage: "magnifyingglass",
                     description: Text("No workloads match \"\(searchTerm)\".")
                 )
             } else {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Results",
                     systemImage: "magnifyingglass",
                     description: Text("Adjust filters to see workloads in this view.")
@@ -6434,13 +6889,13 @@ private struct PodListView: View {
     @ViewBuilder
     private var content: some View {
         if !isConnected {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Not Connected",
                 systemImage: "bolt.slash",
                 description: Text("Connect to the cluster to inspect pods.")
             )
         } else if namespace == nil {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Select a Namespace",
                 systemImage: "square.stack.3d.up",
                 description: Text("Choose a namespace to view pods.")
@@ -6454,26 +6909,26 @@ private struct PodListView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         } else if basePods.isEmpty {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "No Pods",
                 systemImage: "circle.grid.3x3.fill",
                 description: Text("Pods display here once workloads create them.")
             )
         } else if filteredPods.isEmpty {
             if !searchTerm.isEmpty && hasActiveFilter {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Results",
                     systemImage: "magnifyingglass",
                     description: Text("No pods match your search or filters.")
                 )
             } else if !searchTerm.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Results",
                     systemImage: "magnifyingglass",
                     description: Text("No pods match \"\(searchTerm)\".")
                 )
             } else {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Results",
                     systemImage: "magnifyingglass",
                     description: Text("Adjust filters to see pods in this view.")
@@ -6670,7 +7125,7 @@ private struct HelmListView: View {
 
             Group {
                 if !cluster.isConnected {
-                    ContentUnavailableView(
+                    centeredUnavailableView(
                         "Not Connected",
                         systemImage: "bolt.slash",
                         description: Text("Connect to the cluster to inspect Helm releases.")
@@ -6684,13 +7139,13 @@ private struct HelmListView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 } else if releases.isEmpty {
-                    ContentUnavailableView(
+                    centeredUnavailableView(
                         "No Releases",
                         systemImage: "shippingbox",
                         description: Text("Helm releases will appear once charts are installed.")
                     )
                 } else if !searchTerm.isEmpty && filteredReleases.isEmpty {
-                    ContentUnavailableView(
+                    centeredUnavailableView(
                         "No Results",
                         systemImage: "magnifyingglass",
                         description: Text("No releases match \"\(searchTerm)\".")
@@ -6757,6 +7212,7 @@ private struct HelmListView: View {
 }
 
 private struct NetworkListView: View {
+    let cluster: Cluster
     let namespace: Namespace?
     let isConnected: Bool
     let focus: ClusterDetailView.NetworkResourceKind
@@ -6768,20 +7224,25 @@ private struct NetworkListView: View {
     let onEditService: (ServiceSummary) -> Void
     let onDeleteService: (ServiceSummary) -> Void
 
-    private var searchTerm: String {
-        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    private var searchTerm: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var allServices: [ServiceSummary] { namespace?.services ?? [] }
     private var allIngresses: [IngressSummary] { namespace?.ingresses ?? [] }
+    private var allLoadBalancers: [ServiceSummary] {
+        allServices.filter { $0.type.lowercased() == "loadbalancer" }
+    }
 
-    private var services: [ServiceSummary] {
-        let sorted = allServices.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    private var services: [ServiceSummary] { filterServices(allServices) }
+    private var loadBalancers: [ServiceSummary] { filterServices(allLoadBalancers) }
+
+    private func filterServices(_ base: [ServiceSummary]) -> [ServiceSummary] {
+        let sorted = base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         guard !searchTerm.isEmpty else { return sorted }
         return sorted.filter { service in
             service.name.localizedCaseInsensitiveContains(searchTerm) ||
             service.clusterIP.localizedCaseInsensitiveContains(searchTerm) ||
-            service.ports.localizedCaseInsensitiveContains(searchTerm)
+            service.ports.localizedCaseInsensitiveContains(searchTerm) ||
+            service.externalEndpointSummary.localizedCaseInsensitiveContains(searchTerm)
         }
     }
 
@@ -6795,16 +7256,29 @@ private struct NetworkListView: View {
         }
     }
 
+    private var currentServiceIDs: [ServiceSummary.ID] {
+        switch focus {
+        case .services:
+            return services.map(\.id)
+        case .endpoints:
+            return services.map(\.id)
+        case .loadBalancers:
+            return loadBalancers.map(\.id)
+        default:
+            return []
+        }
+    }
+
     var body: some View {
         Group {
             if !isConnected {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Not Connected",
                     systemImage: "bolt.slash",
                     description: Text("Connect to the cluster to inspect networking resources.")
                 )
             } else if namespace == nil {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Select a Namespace",
                     systemImage: "square.stack.3d.up",
                     description: Text("Choose a namespace to view networking resources.")
@@ -6821,8 +7295,16 @@ private struct NetworkListView: View {
                 switch focus {
                 case .services:
                     servicesBody
+                case .endpoints:
+                    endpointsBody
                 case .ingresses:
                     ingressesBody
+                case .networkPolicies:
+                    networkPoliciesBody
+                case .loadBalancers:
+                    loadBalancersBody
+                case .portForwards:
+                    portForwardsBody
                 }
             }
         }
@@ -6831,7 +7313,7 @@ private struct NetworkListView: View {
             serviceSelection.removeAll()
             ingressSelection.removeAll()
         }
-        .onChange(of: services.map(\.id)) { _, newIDs in
+        .onChange(of: currentServiceIDs) { _, newIDs in
             let valid = Set(newIDs)
             serviceSelection = serviceSelection.intersection(valid)
         }
@@ -6844,13 +7326,13 @@ private struct NetworkListView: View {
     private var servicesBody: some View {
         Group {
             if allServices.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Services",
                     systemImage: "switch.2",
                     description: Text("Services appear once workloads expose ports.")
                 )
             } else if !searchTerm.isEmpty && services.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Results",
                     systemImage: "magnifyingglass",
                     description: Text("No services match \"\(searchTerm)\".")
@@ -6862,24 +7344,78 @@ private struct NetworkListView: View {
                     selection: $serviceSelection,
                     allowsMultipleSelection: true,
                     minimumRowHeight: 32,
-                    onRowDoubleTap: { service in
-                        onInspectService(service)
-                    }
+                    onRowDoubleTap: { service in onInspectService(service) }
                 )
             }
         }
     }
 
+    private var loadBalancersBody: some View {
+        Group {
+            if allLoadBalancers.isEmpty {
+                centeredUnavailableView(
+                    "No Load Balancers",
+                    systemImage: "server.rack",
+                    description: Text("Create a LoadBalancer service to expose workloads externally.")
+                )
+            } else if !searchTerm.isEmpty && loadBalancers.isEmpty {
+                centeredUnavailableView(
+                    "No Results",
+                    systemImage: "magnifyingglass",
+                    description: Text("No load balancers match \"\(searchTerm)\".")
+                )
+            } else {
+                FixedColumnTable(
+                    rows: loadBalancers,
+                    columns: serviceColumns,
+                    selection: $serviceSelection,
+                    allowsMultipleSelection: true,
+                    minimumRowHeight: 32,
+                    onRowDoubleTap: { service in onInspectService(service) }
+                )
+            }
+        }
+    }
+
+    private var endpointsBody: some View {
+        Group {
+            if services.isEmpty {
+                centeredUnavailableView(
+                    "No Endpoints",
+                    systemImage: "point.3.filled.connected.trianglepath.dotted",
+                    description: Text("Endpoints appear once services select pods.")
+                )
+            } else {
+                FixedColumnTable(
+                    rows: services,
+                    columns: endpointColumns,
+                    selection: $serviceSelection,
+                    allowsMultipleSelection: true,
+                    minimumRowHeight: 32,
+                    onRowDoubleTap: { service in onInspectService(service) }
+                )
+            }
+        }
+    }
+
+    private var networkPoliciesBody: some View {
+        centeredUnavailableView(
+            "Network Policies",
+            systemImage: "shield.lefthalf.fill",
+            description: Text("Network policies are not yet available in this build.")
+        )
+    }
+
     private var ingressesBody: some View {
         Group {
             if allIngresses.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Ingresses",
                     systemImage: "cloud",
                     description: Text("Ingress resources appear once they are defined in the namespace.")
                 )
             } else if !searchTerm.isEmpty && ingresses.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Results",
                     systemImage: "magnifyingglass",
                     description: Text("No ingresses match \"\(searchTerm)\".")
@@ -6894,6 +7430,11 @@ private struct NetworkListView: View {
                 )
             }
         }
+    }
+
+    private var portForwardsBody: some View {
+        PortForwardDashboard(cluster: cluster, namespace: namespace)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var serviceColumns: [FixedTableColumn<ServiceSummary>] {
@@ -6917,6 +7458,12 @@ private struct NetworkListView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             },
+            FixedTableColumn("External", width: ServiceColumnWidth.external) { service in
+                Text(service.externalEndpointSummary)
+                    .foregroundStyle(service.hasExternalEndpoints ? .primary : .secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            },
             FixedTableColumn("Health", width: ServiceColumnWidth.health) { service in
                 serviceHealthBadge(for: service)
             },
@@ -6939,11 +7486,9 @@ private struct NetworkListView: View {
                 Menu {
                     Button("Inspect") { onInspectService(service) }
                         .disabled(!isConnected)
-                    Button("Edit YAML…") {
-                        onEditService(service)
-                    }
-                    .disabled(!canEdit)
-                    .optionalHelp(!canEdit ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
+                    Button("Edit YAML…") { onEditService(service) }
+                        .disabled(!canEdit)
+                        .optionalHelp(!canEdit ? (editReason ?? "Editing disabled by RBAC policy.") : nil)
                     Button(role: .destructive) {
                         onDeleteService(service)
                     } label: {
@@ -6959,6 +7504,38 @@ private struct NetworkListView: View {
                 .menuStyle(.borderlessButton)
             }
         ]
+    }
+
+    private var endpointColumns: [FixedTableColumn<ServiceSummary>] {
+        [
+            FixedTableColumn("Service", width: ServiceColumnWidth.name) { service in
+                Text(service.name)
+                    .font(.body.monospaced())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            },
+            FixedTableColumn("Cluster IP", width: ServiceColumnWidth.clusterIP) { service in
+                Text(service.clusterIP)
+                    .foregroundStyle(.secondary)
+            },
+            FixedTableColumn("Ready Pods", width: ServiceColumnWidth.health) { service in
+                endpointPodsList(service.readyPods)
+            },
+            FixedTableColumn("Not Ready", width: ServiceColumnWidth.health) { service in
+                endpointPodsList(service.notReadyPods)
+            }
+        ]
+    }
+
+    private func endpointPodsList(_ pods: [String]) -> some View {
+        Group {
+            if pods.isEmpty {
+                Text("—").foregroundStyle(.secondary)
+            } else {
+                Text(pods.joined(separator: ", "))
+                    .lineLimit(2)
+            }
+        }
     }
 
     @ViewBuilder
@@ -7032,7 +7609,6 @@ private struct NetworkListView: View {
         ]
     }
 }
-
 private struct PortForwardDashboard: View {
     let cluster: Cluster
     let namespace: Namespace?
@@ -7057,7 +7633,7 @@ private struct PortForwardDashboard: View {
     var body: some View {
         SectionBox(title: "Active Port Forwards") {
             if forwards.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Active Forwards",
                     systemImage: "bolt.horizontal",
                     description: Text("Start a port forward from the pod inspector to monitor live connections.")
@@ -7161,13 +7737,13 @@ private struct StorageListView: View {
     var body: some View {
         Group {
             if !isConnected {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Not Connected",
                     systemImage: "bolt.slash",
                     description: Text("Connect to the cluster to inspect storage resources.")
                 )
             } else if namespace == nil {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Select a Namespace",
                     systemImage: "square.stack.3d.up",
                     description: Text("Choose a namespace to view persistent volume claims.")
@@ -7182,13 +7758,13 @@ private struct StorageListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else if claims.isEmpty {
                 if searchTerm.isEmpty {
-                    ContentUnavailableView(
+                    centeredUnavailableView(
                         "No Persistent Volume Claims",
                         systemImage: "externaldrive",
                         description: Text("PVCs appear here once declared in the namespace.")
                     )
                 } else {
-                    ContentUnavailableView(
+                    centeredUnavailableView(
                         "No Results",
                         systemImage: "magnifyingglass",
                         description: Text("No PVCs match \"\(searchTerm)\".")
@@ -7296,13 +7872,13 @@ private struct PodsSection: View {
 
     var body: some View {
         if !isConnected {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Not Connected",
                 systemImage: "bolt.slash",
                 description: Text("Connect to the cluster to inspect pods.")
             )
         } else if namespace == nil {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Select a Namespace",
                 systemImage: "square.stack.3d.up",
                 description: Text("Choose a namespace from the list to view pods.")
@@ -7316,7 +7892,7 @@ private struct PodsSection: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if pods.isEmpty {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "No Pods",
                 systemImage: "circle.grid.3x3.fill",
                 description: Text("Pods show here once the namespace is selected.")
@@ -7804,7 +8380,7 @@ private struct WorkloadDetailSheetView: View {
                 .font(.headline)
 
             if pods.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Pods",
                     systemImage: "circle.grid.3x3",
                     description: Text("Pods managed by this workload will appear here.")
@@ -7877,13 +8453,13 @@ private struct EventsSection: View {
 
     var body: some View {
         if !isConnected {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Not Connected",
                 systemImage: "bolt.slash",
                 description: Text("Connect to the cluster to inspect events.")
             )
         } else if namespace == nil {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Select a Namespace",
                 systemImage: "square.stack.3d.up",
                 description: Text("Choose a namespace from the list to view events.")
@@ -7897,7 +8473,7 @@ private struct EventsSection: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let namespace, namespace.events.isEmpty {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "No Events",
                 systemImage: "bell",
                 description: Text("Events will stream in once the namespace is chosen.")
@@ -7925,71 +8501,77 @@ private struct EventsSection: View {
     }
 }
 
-private struct ConfigSection: View {
+private struct ConfigResourceListView: View {
     let cluster: Cluster
     let namespace: Namespace?
     let isConnected: Bool
+    let kind: ConfigResourceKind
     let filterState: ConfigFilterState
+    let searchText: String
+
     @EnvironmentObject private var model: AppModel
     @State private var selectedSecret: ConfigResourceSummary?
     @State private var selectedConfigMap: ConfigResourceSummary?
 
+    private var searchTerm: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var baseResources: [ConfigResourceSummary] {
+        guard let namespace else { return [] }
+        return namespace.configResources
+            .filter { $0.kind == kind }
+            .filter { filterState.matches($0) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var filteredResources: [ConfigResourceSummary] {
+        guard !searchTerm.isEmpty else { return baseResources }
+        return baseResources.filter { resource in
+            resource.name.localizedCaseInsensitiveContains(searchTerm) ||
+            (resource.summary?.localizedCaseInsensitiveContains(searchTerm) ?? false)
+        }
+    }
+
     var body: some View {
         Group {
             if !isConnected {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Not Connected",
                     systemImage: "bolt.slash",
-                    description: Text("Connect to the cluster to inspect config resources.")
+                    description: Text("Connect to the cluster to inspect \(kind.pluralDisplayName.lowercased()).")
                 )
             } else if namespace == nil {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Select a Namespace",
                     systemImage: "square.stack.3d.up",
-                    description: Text("Choose a namespace from the list to view config resources.")
+                    description: Text("Choose a namespace to view \(kind.pluralDisplayName.lowercased()).")
                 )
             } else if let namespace, !namespace.isLoaded {
-                VStack {
+                VStack(spacing: 12) {
                     ProgressView()
-                    Text("Loading config resources…")
+                    Text("Loading \(kind.pluralDisplayName.lowercased())…")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let namespace {
-                let resources = namespace.configResources.filter { filterState.matches($0) }
-                VStack(alignment: .leading, spacing: 24) {
-                    if namespace.configResources.isEmpty {
-                        ContentUnavailableView(
-                            "No Config Resources",
-                            systemImage: "doc.text.magnifyingglass",
-                            description: Text("ConfigMaps, Secrets, and related resources will appear here when present in the namespace.")
-                        )
-                    } else if resources.isEmpty {
-                        ContentUnavailableView(
-                            "No Matching Resources",
-                            systemImage: "line.3.horizontal.decrease.circle",
-                            description: Text("Adjust filters to view config resources in this namespace.")
-                        )
-                    } else {
-                        ConfigResourceGroupsView(
-                            resources: resources,
-                            onOpenResource: { resource in
-                                switch resource.kind {
-                                case .secret:
-                                    selectedSecret = resource
-                                case .configMap:
-                                    selectedConfigMap = resource
-                                default:
-                                    break
-                                }
-                            }
-                        )
-                    }
-
-                    YAMLPreviewSection(namespace: namespace, isConnected: isConnected)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else if baseResources.isEmpty {
+                centeredUnavailableView(
+                    emptyTitle,
+                    systemImage: kind.systemImage,
+                    description: Text(emptyDescription)
+                )
+            } else if filteredResources.isEmpty {
+                centeredUnavailableView(
+                    "No Results",
+                    systemImage: "magnifyingglass",
+                    description: Text("No \(kind.pluralDisplayName.lowercased()) match \"\(searchTerm)\".")
+                )
+            } else {
+                ConfigResourceGroupsView(
+                    resources: filteredResources,
+                    onOpenResource: handleOpenResource
+                )
             }
         }
         .sheet(item: $selectedSecret) { secret in
@@ -8017,6 +8599,39 @@ private struct ConfigSection: View {
                 Text("ConfigMap details unavailable without namespace context.")
                     .padding()
             }
+        }
+    }
+
+    private var emptyTitle: String {
+        switch kind {
+        case .configMap: return "No ConfigMaps"
+        case .secret: return "No Secrets"
+        case .resourceQuota: return "No Resource Quotas"
+        case .limitRange: return "No Limit Ranges"
+        }
+    }
+
+    private var emptyDescription: String {
+        switch kind {
+        case .configMap:
+            return "ConfigMaps will appear once created in this namespace."
+        case .secret:
+            return "Secrets will appear once created in this namespace."
+        case .resourceQuota:
+            return "Define ResourceQuotas to control namespace usage."
+        case .limitRange:
+            return "Define LimitRanges to enforce pod resource limits."
+        }
+    }
+
+    private func handleOpenResource(_ resource: ConfigResourceSummary) {
+        switch resource.kind {
+        case .secret:
+            selectedSecret = resource
+        case .configMap:
+            selectedConfigMap = resource
+        default:
+            break
         }
     }
 }
@@ -8057,7 +8672,7 @@ private struct HelmSection: View {
             }
 
             if !isConnected {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Not Connected",
                     systemImage: "bolt.slash",
                     description: Text("Connect to the cluster to inspect Helm releases.")
@@ -8072,7 +8687,7 @@ private struct HelmSection: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ContentUnavailableView(
+                    centeredUnavailableView(
                         "No Releases",
                         systemImage: "shippingbox",
                         description: Text("Helm releases will appear here once installed on the cluster.")
@@ -8144,19 +8759,19 @@ private struct NetworkSection: View {
                 .font(.headline)
 
             if !isConnected {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Not Connected",
                     systemImage: "bolt.slash",
                     description: Text("Connect to the cluster to inspect network resources.")
                 )
             } else if namespace == nil {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Select a Namespace",
                     systemImage: "square.stack.3d.up",
                     description: Text("Choose a namespace from the list to view network resources.")
                 )
             } else if (title == "Services" ? services.isEmpty : ingresses.isEmpty) {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Entries",
                     systemImage: systemImage,
                     description: Text(emptyMessage)
@@ -8245,19 +8860,19 @@ private struct StorageSection: View {
                 .font(.headline)
 
             if !isConnected {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Not Connected",
                     systemImage: "bolt.slash",
                     description: Text("Connect to the cluster to inspect storage resources.")
                 )
             } else if namespace == nil {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Select a Namespace",
                     systemImage: "square.stack.3d.up",
                     description: Text("Choose a namespace from the list to view storage resources.")
                 )
             } else if claims.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Persistent Volume Claims",
                     systemImage: "externaldrive",
                     description: Text("PVCs will appear here when defined in the namespace.")
@@ -8386,19 +9001,19 @@ private struct AccessControlSection: View {
             Text(title)
                 .font(.headline)
             if !isConnected {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Not Connected",
                     systemImage: "bolt.slash",
                     description: Text("Connect to the cluster to inspect access control objects.")
                 )
             } else if namespace == nil {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Select a Namespace",
                     systemImage: "square.stack.3d.up",
                     description: Text("Choose a namespace from the list to view access control objects.")
                 )
             } else if entries {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No Entries",
                     systemImage: "lock.shield",
                     description: Text("No resources found in this namespace.")
@@ -8441,13 +9056,13 @@ private struct CustomResourcesSection: View {
                 .font(.headline)
 
             if !isConnected {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "Not Connected",
                     systemImage: "bolt.slash",
                     description: Text("Connect to the cluster to inspect custom resources.")
                 )
             } else if resources.isEmpty {
-                ContentUnavailableView(
+                centeredUnavailableView(
                     "No CRDs",
                     systemImage: "puzzlepiece.extension",
                     description: Text("Install Helm charts or apply CRDs to populate this list.")
@@ -8662,6 +9277,7 @@ private enum ServiceColumnWidth {
     static let type: CGFloat = 120
     static let clusterIP: CGFloat = 160
     static let ports: CGFloat = 160
+    static let external: CGFloat = 200
     static let health: CGFloat = 120
     static let latency: CGFloat = 130
     static let age: CGFloat = 80
@@ -8749,6 +9365,16 @@ private struct FilterChip: View {
     private var borderColor: Color {
         isSelected ? tint.opacity(0.6) : Color.secondary.opacity(0.25)
     }
+}
+
+@ViewBuilder
+private func centeredUnavailableView(
+    _ title: String,
+    systemImage: String,
+    description: Text
+) -> some View {
+    ContentUnavailableView(title, systemImage: systemImage, description: description)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 }
 
 
@@ -8856,21 +9482,50 @@ private struct EventTimelineView: View {
 
 private struct NavigationSidebar: View {
     @Binding var selectedTab: ClusterDetailView.Tab
+    @Binding var expandedCategories: Set<ClusterDetailView.ResourceCategory>
     let isConnected: Bool
+    @State private var hoveredCategory: ClusterDetailView.ResourceCategory?
+    @State private var hoveredTab: ClusterDetailView.Tab?
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                ForEach(ClusterDetailView.ResourceCategory.allCases, id: \.id) { category in
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(ClusterDetailView.ResourceCategory.navigationOrder, id: \.id) { category in
                     let tabs = category.tabs
                     if !tabs.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(category.menuTitle.uppercased())
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            ForEach(tabs, id: \.self) { tab in
-                                navigationRow(for: tab)
+                        if category == .namespaces || category == .events {
+                            navigationRow(for: tabs[0])
+                                .padding(.top, 6)
+                        } else {
+                            DisclosureGroup(
+                                isExpanded: binding(for: category)
+                            ) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ForEach(tabs, id: \.self) { tab in
+                                        navigationRow(for: tab)
+                                    }
+                                }
+                                .padding(.top, 6)
+                            } label: {
+                                Text(category.menuTitle.uppercased())
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 6)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(Color.accentColor.opacity(hoveredCategory == category ? 0.12 : 0))
+                                    )
+                                    .contentShape(Rectangle())
+                                    .onHover { hovering in
+                                        hoveredCategory = hovering ? category : nil
+                                    }
+                                    .onTapGesture {
+                                        toggle(category)
+                                    }
                             }
+                            .disclosureGroupStyle(.automatic)
                         }
                     }
                 }
@@ -8900,12 +9555,38 @@ private struct NavigationSidebar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+                    .fill(
+                        isSelected ? Color.accentColor.opacity(0.18) : Color.accentColor.opacity(hoveredTab == tab ? 0.12 : 0)
+                    )
             )
         }
         .buttonStyle(.plain)
         .foregroundStyle(disabled ? Color.secondary : Color.primary)
         .disabled(disabled)
+        .onHover { hovering in
+            hoveredTab = hovering ? tab : nil
+        }
+    }
+
+    private func binding(for category: ClusterDetailView.ResourceCategory) -> Binding<Bool> {
+        Binding(
+            get: { expandedCategories.contains(category) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedCategories.insert(category)
+                } else {
+                    expandedCategories.remove(category)
+                }
+            }
+        )
+    }
+
+    private func toggle(_ category: ClusterDetailView.ResourceCategory) {
+        if expandedCategories.contains(category) {
+            expandedCategories.remove(category)
+        } else {
+            expandedCategories.insert(category)
+        }
     }
 }
 
@@ -9038,53 +9719,6 @@ private struct ConfigResourceGroupView: View {
     }
 }
 
-private struct YAMLPreviewSection: View {
-    let namespace: Namespace?
-    let isConnected: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Live YAML Preview")
-                .font(.headline)
-            if !isConnected {
-                ContentUnavailableView(
-                    "Not Connected",
-                    systemImage: "bolt.slash",
-                    description: Text("Connect to the cluster to preview manifests.")
-                )
-            } else if namespace == nil {
-                Text("Select a namespace to preview manifest YAML")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else if let namespace, !namespace.isLoaded {
-                VStack(alignment: .leading, spacing: 8) {
-                    ProgressView()
-                    Text("Loading manifest…")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            } else if let namespace {
-                TextEditor(text: .constant(sampleYAML(for: namespace)))
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .frame(minHeight: 200)
-                    .disabled(true)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.gray.opacity(0.2))
-                    )
-            }
-            Text("Editing and diffing will be available when connected to the cluster.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func sampleYAML(for namespace: Namespace) -> String {
-        "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: \(namespace.name)"
-    }
-}
-
 private struct WorkloadGroupsView: View {
     let workloads: [WorkloadSummary]
     let onSelect: (WorkloadSummary) -> Void
@@ -9128,7 +9762,7 @@ private struct FilteredWorkloadList: View {
 
     var body: some View {
         if workloads.isEmpty {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "No \(kind.displayName)s",
                 systemImage: kind.systemImage,
                 description: Text("No \(kind.displayName.lowercased())s are present in the selected namespace.")
@@ -9362,7 +9996,7 @@ private struct NodesSection: View {
 
     var body: some View {
         if !cluster.isConnected {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Not Connected",
                 systemImage: "bolt.slash",
                 description: Text("Connect to the cluster to inspect nodes.")
@@ -9376,13 +10010,13 @@ private struct NodesSection: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if nodes.isEmpty {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "No Nodes",
                 systemImage: "cpu",
                 description: Text("Nodes will appear here once the cluster finishes loading.")
             )
         } else if filteredNodes.isEmpty {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "No Matching Nodes",
                 systemImage: "line.3.horizontal.decrease.circle",
                 description: Text("Adjust filters to see node results.")
@@ -9677,13 +10311,13 @@ private struct NamespacesSection: View {
 
     var body: some View {
         if !isConnected {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "Not Connected",
                 systemImage: "bolt.slash",
                 description: Text("Connect to the cluster to browse namespaces.")
             )
         } else if namespaces.isEmpty {
-            ContentUnavailableView(
+            centeredUnavailableView(
                 "No Namespaces",
                 systemImage: "folder.badge.questionmark",
                 description: Text("Namespaces will appear once the cluster loads them.")

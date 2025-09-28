@@ -291,9 +291,8 @@ struct SecretEntryEditor: Identifiable, Hashable {
         self.key = entry.key
         self.originalEncodedValue = entry.encodedValue
         self.encodedValue = entry.encodedValue
-        if let data = Data(base64Encoded: entry.encodedValue),
-           let string = String(data: data, encoding: .utf8) {
-            self.decodedStorage = string
+        if let decoded = SecretEntryEditor.decodeBase64(entry.encodedValue) {
+            self.decodedStorage = decoded
             self.canDecode = true
         } else {
             self.decodedStorage = nil
@@ -326,12 +325,7 @@ struct SecretEntryEditor: Identifiable, Hashable {
         switch editingMode {
         case .base64:
             if decodedStorage == nil {
-                if let data = Data(base64Encoded: encodedValue),
-                   let string = String(data: data, encoding: .utf8) {
-                    decodedStorage = string
-                } else {
-                    decodedStorage = ""
-                }
+                decodedStorage = SecretEntryEditor.decodeBase64(encodedValue) ?? ""
             }
             editingMode = .plaintext
         case .plaintext:
@@ -348,15 +342,20 @@ struct SecretEntryEditor: Identifiable, Hashable {
 
     mutating func updateEncodedValue(_ value: String) {
         encodedValue = value
-        if let data = Data(base64Encoded: value),
-           let string = String(data: data, encoding: .utf8) {
-            decodedStorage = string
+        if let decoded = SecretEntryEditor.decodeBase64(value) {
+            decodedStorage = decoded
             canDecode = true
         } else {
             decodedStorage = nil
             canDecode = false
             editingMode = .base64
         }
+    }
+
+    private static func decodeBase64(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = Data(base64Encoded: trimmed, options: [.ignoreUnknownCharacters]) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     var hasChanges: Bool {
@@ -719,6 +718,8 @@ struct ServiceSummary: Identifiable, Hashable {
     var notReadyPods: [String] = []
     var latencyP50: TimeInterval?
     var latencyP95: TimeInterval?
+    var externalIPs: [String] = []
+    var loadBalancerAddresses: [String] = []
 
     var totalEndpointCount: Int { readyEndpointCount + notReadyEndpointCount }
 
@@ -735,6 +736,16 @@ struct ServiceSummary: Identifiable, Hashable {
         if ratio >= 0.9 { return .healthy }
         if ratio >= 0.6 { return .warning }
         return .failing
+    }
+
+    var externalEndpointSummary: String {
+        let combined = externalIPs + loadBalancerAddresses
+        guard !combined.isEmpty else { return "—" }
+        return combined.joined(separator: ", ")
+    }
+
+    var hasExternalEndpoints: Bool {
+        !externalIPs.isEmpty || !loadBalancerAddresses.isEmpty
     }
 }
 

@@ -153,17 +153,17 @@
 - ConfigMaps share the same diffable editor pattern as Secrets; populate `config_map_entries` when adding new fetchers so the detail sheet can render values and compute diffs.
 
 ## Recently Shipped
+- Lens-style sidebar regrouping that mirrors Lens (Workloads/Config/Network/Storage) with collapsible categories, dedicated subtabs, and fixed-width lists; storage now splits PVCs, PVs, and storage classes.
 - Global quick search (`⌘K`) with keyboard navigation, namespace filter, and jump-to focus that syncs the center panel and inspector.
 - Advanced list filtering with status chips, label selectors, and persisted sort preferences across workloads, pods, nodes, and config resources.
 - RBAC-aware UI actions across pods, config resources, secrets, services, and PVCs (tooltips surface `kubectl auth can-i --reason` output).
 - Inline event badges and consolidated timelines in pod/workload inspectors, plus embedded exec/log panes replacing modal sheets.
 - Enhanced rollout visuals with chart overlays, status change markers, and pod topology highlighting tied to rollout health.
 - Networking insights: endpoint health badges in lists/inspectors, ingress route visualizations, and a live port-forward dashboard scoped to the current cluster.
+- Telemetry pipeline emitting rollout, service health, and port-forward events to a JSONL log for external dashboards.
 
 ## Upcoming Feature Milestones
-1. Enhanced rollout visuals – extend the rollout tab with rollout timeline overlays, pod topology highlighting, and status change markers.
-2. Networking insights – show service endpoint health, ingress host visualizations, and live port-forward dashboards.
-3. Storage & RBAC coverage – dedicated panes for PVs/HPAs/CRDs with inspectors mirroring Lens actions.
-4. Cluster overview metrics – integrate Prometheus queries with selectable ranges and baseline comparisons.
-5. Extension hooks – define an extension manifest and sandboxed API for custom panels/actions.
+1. Storage & RBAC coverage – wire real data and inspectors into the new PV/StorageClass tabs plus broaden RBAC-aware controls for cluster-scoped resources and CRDs.
+2. Cluster overview metrics – integrate Prometheus queries with selectable ranges and baseline comparisons.
+3. Extension hooks – define an extension manifest and sandboxed API for custom panels/actions.
 - Node and workload tables include toolbar sort menus (name, age, readiness, etc.); default to `Name ↑` and preserve namespace filter interaction when extending columns.

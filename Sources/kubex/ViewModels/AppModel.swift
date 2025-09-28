@@ -169,11 +169,13 @@ final class AppModel: ObservableObject {
     private var portForwardService: PortForwardService
     private var editService: EditService
     private var helmService: HelmService
+    private let telemetryService: TelemetryService
     private var clusterMetricsHistory: [Cluster.ID: ClusterMetricHistory] = [:]
     private var workloadRolloutHistory: [Cluster.ID: [WorkloadHistoryKey: WorkloadRolloutSeries]] = [:]
 
     private var clusterRefreshTask: Task<Void, Never>?
     private var namespaceRefreshTasks: [String: Task<Void, Never>] = [:]
+    private var namespaceRetryTasks: [String: Task<Void, Never>] = [:]
     private let clusterRefreshInterval: TimeInterval = 30
     private let namespaceRefreshInterval: TimeInterval = 20
     private var clusterRefreshIntervalNanoseconds: UInt64 { UInt64(max(clusterRefreshInterval, 5) * 1_000_000_000) }
@@ -234,7 +236,8 @@ final class AppModel: ObservableObject {
         execService: ExecService = KubectlExecService(),
         portForwardService: PortForwardService = KubectlPortForwardService(),
         editService: EditService = KubectlEditService(),
-        helmService: HelmService = HelmCLIService()
+        helmService: HelmService = HelmCLIService(),
+        telemetryService: TelemetryService = TelemetryLogService()
     ) {
         let defaults = UserDefaults.standard
 
@@ -244,6 +247,7 @@ final class AppModel: ObservableObject {
         self.portForwardService = portForwardService
         self.editService = editService
         self.helmService = helmService
+        self.telemetryService = telemetryService
 
         let storedSources: [String]
         if let data = defaults.data(forKey: PreferenceKeys.kubeconfigSources),
@@ -517,7 +521,7 @@ final class AppModel: ObservableObject {
 
         case let .service(namespaceID, serviceID):
             selectedNamespaceID = namespaceID
-            selectedResourceTab = .network
+            selectedResourceTab = .networkServices
             setInspectorSelection(
                 .service(
                     clusterID: cluster.id,
@@ -528,7 +532,7 @@ final class AppModel: ObservableObject {
 
         case let .ingress(namespaceID, ingressID):
             selectedNamespaceID = namespaceID
-            selectedResourceTab = .network
+            selectedResourceTab = .networkIngresses
             setInspectorSelection(
                 .ingress(
                     clusterID: cluster.id,
@@ -539,7 +543,7 @@ final class AppModel: ObservableObject {
 
         case let .persistentVolumeClaim(namespaceID, claimID):
             selectedNamespaceID = namespaceID
-            selectedResourceTab = .storage
+            selectedResourceTab = .storagePersistentVolumeClaims
             setInspectorSelection(
                 .persistentVolumeClaim(
                     clusterID: cluster.id,
@@ -548,9 +552,16 @@ final class AppModel: ObservableObject {
                 )
             )
 
-        case let .configResource(_, namespaceID, _):
+        case let .configResource(kind, namespaceID, _):
             selectedNamespaceID = namespaceID
-            selectedResourceTab = .config
+            selectedResourceTab = {
+                switch kind {
+                case .configMap: return .configConfigMaps
+                case .secret: return .configSecrets
+                case .resourceQuota: return .configResourceQuotas
+                case .limitRange: return .configLimitRanges
+                }
+            }()
             clearInspectorSelection()
         }
 
@@ -750,7 +761,7 @@ final class AppModel: ObservableObject {
                     subtitle: "\(namespace.name) • PVC",
                     detail: claimDetails.joined(separator: " · "),
                     category: "PersistentVolumeClaim",
-                    icon: ClusterDetailView.Tab.storage.icon,
+                    icon: ClusterDetailView.Tab.storagePersistentVolumeClaims.icon,
                     target: .persistentVolumeClaim(namespaceID: namespace.id, claimID: claim.id),
                     secondary: [namespace.name, claim.status]
                 )
@@ -1078,8 +1089,10 @@ final class AppModel: ObservableObject {
             }
             activePortForwards.append(forward)
             error = nil
+            emitPortForwardEvent(name: "port_forward_started", request: forward.request, status: forward.status, message: nil)
         } catch {
             self.error = AppModelError(message: error.localizedDescription)
+            emitPortForwardFailure(request: request, message: error.localizedDescription)
         }
     }
 
@@ -1090,6 +1103,7 @@ final class AppModel: ObservableObject {
             try await portForwardService.stopForward(forward)
             activePortForwards.remove(at: index)
             error = nil
+            emitPortForwardEvent(name: "port_forward_stopped", request: forward.request, status: forward.status, message: nil)
         } catch {
             self.error = AppModelError(message: error.localizedDescription)
         }
@@ -1097,21 +1111,25 @@ final class AppModel: ObservableObject {
 
     private func handlePortForwardEvent(_ event: PortForwardLifecycleEvent) {
         switch event {
-        case .terminated(let id, _, let kubectlError):
+        case .terminated(let id, let request, let kubectlError):
             guard let index = activePortForwards.firstIndex(where: { $0.id == id }) else {
                 if let kubectlError {
                     let message = sanitizeErrorMessage(kubectlError.message)
+                    emitPortForwardFailure(request: request, message: message)
                     self.error = AppModelError(message: message)
                 }
                 return
             }
 
+            let forward = activePortForwards[index]
             if let kubectlError {
                 let message = sanitizeErrorMessage(kubectlError.message)
                 activePortForwards[index].status = .failed(message)
+                emitPortForwardEvent(name: "port_forward_failed", request: forward.request, status: .failed(message), message: message)
                 self.error = AppModelError(message: message)
             } else {
                 activePortForwards.remove(at: index)
+                emitPortForwardEvent(name: "port_forward_terminated", request: forward.request, status: forward.status, message: nil)
             }
         }
     }
@@ -1881,11 +1899,19 @@ final class AppModel: ObservableObject {
                 updatedCluster.health = .degraded
             }
             clusters[clusterIndex] = updatedCluster
+            emitServiceTelemetry(clusterID: cluster.id, contextName: cluster.contextName, namespace: namespace)
             startNamespaceWatcher(clusterID: cluster.id, contextName: cluster.contextName, namespaceName: namespaceName)
+            namespaceRetryTasks[namespaceName]?.cancel()
+            namespaceRetryTasks.removeValue(forKey: namespaceName)
             KubectlDefaults.debug("Namespace \(namespaceName) loaded: workloads=\(namespace.workloads.count) pods=\(namespace.pods.count) events=\(namespace.events.count)")
             persistSelection()
             return namespace
         } catch {
+            if isTransientKubectlDecodeError(error) {
+                KubectlDefaults.debug("Namespace \(namespaceName) decode failure; retrying shortly.")
+                scheduleNamespaceRetry(clusterID: clusterID, namespaceName: namespaceName)
+                return nil
+            }
             let message = sanitizeErrorMessage(error.localizedDescription)
             self.error = AppModelError(message: message)
             var updatedCluster = cluster
@@ -2093,6 +2119,35 @@ final class AppModel: ObservableObject {
         return normalized.isEmpty ? raw : normalized
     }
 
+    private func isTransientKubectlDecodeError(_ error: Error) -> Bool {
+        if let kubectlError = error as? KubectlError,
+           kubectlError.message.localizedCaseInsensitiveContains("failed to decode kubectl response") {
+            return true
+        }
+        let description = error.localizedDescription.lowercased()
+        return description.contains("failed to decode kubectl response")
+    }
+
+    private func scheduleNamespaceRetry(clusterID: Cluster.ID, namespaceName: String) {
+        namespaceRetryTasks[namespaceName]?.cancel()
+        let task = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                return
+            }
+            guard let self else { return }
+            await self.performNamespaceRetry(clusterID: clusterID, namespaceName: namespaceName)
+        }
+        namespaceRetryTasks[namespaceName] = task
+    }
+
+    @MainActor
+    private func performNamespaceRetry(clusterID: Cluster.ID, namespaceName: String) async {
+        namespaceRetryTasks[namespaceName] = nil
+        _ = await loadNamespaceIfNeeded(clusterID: clusterID, namespaceName: namespaceName)
+    }
+
     private func applyOptimisticSecretUpdate(
         clusterID: Cluster.ID,
         namespaceName: String,
@@ -2165,6 +2220,10 @@ final class AppModel: ObservableObject {
             task.cancel()
         }
         namespaceRefreshTasks.removeAll()
+        for task in namespaceRetryTasks.values {
+            task.cancel()
+        }
+        namespaceRetryTasks.removeAll()
     }
 
     private func startClusterWatcher(clusterID: Cluster.ID, contextName: String) {
@@ -2233,6 +2292,10 @@ final class AppModel: ObservableObject {
             let detailed = try await clusterService.loadNamespaceDetails(contextName: contextName, namespace: namespaceName)
             applyNamespaceDetails(clusterID: clusterID, namespaceDetail: detailed)
         } catch {
+            if isTransientKubectlDecodeError(error) {
+                KubectlDefaults.debug("Namespace \(namespaceName) decode failure during refresh; will retry on next interval.")
+                return
+            }
             let message = sanitizeErrorMessage(error.localizedDescription)
             if self.error == nil {
                 self.error = AppModelError(message: message)
@@ -2361,10 +2424,177 @@ final class AppModel: ObservableObject {
                 appendSample(&series.updated, replicas: workload.updatedReplicas)
                 appendSample(&series.available, replicas: workload.availableReplicas)
                 store[key] = series
+                emitWorkloadTelemetry(cluster: cluster, namespace: namespace, workload: workload, timestamp: timestamp)
             }
         }
 
         workloadRolloutHistory[clusterID] = store
+    }
+
+    private func workloadEventCounts(namespace: Namespace, workload: WorkloadSummary) -> (warnings: Int, errors: Int) {
+        let workloadName = workload.name.lowercased()
+        let podNames = namespace.pods
+            .filter { pod in
+                guard let owner = pod.controlledBy?.lowercased() else { return false }
+                return owner.contains(workloadName) || owner.contains(workload.kind.displayName.lowercased())
+            }
+            .map { $0.name.lowercased() }
+        var warnings = 0
+        var errors = 0
+        for event in namespace.events {
+            let message = event.message.lowercased()
+            let matchesWorkload = message.contains(workloadName)
+            let matchesPod = podNames.contains { message.contains($0) }
+            guard matchesWorkload || matchesPod else { continue }
+            let count = max(event.count, 1)
+            switch event.type {
+            case .warning: warnings += count
+            case .error: errors += count
+            default: break
+            }
+        }
+        return (warnings, errors)
+    }
+
+    private func emitWorkloadTelemetry(cluster: Cluster, namespace: Namespace, workload: WorkloadSummary, timestamp: Date) {
+        let desired = workload.replicas
+        let ready = workload.readyReplicas
+        let available = workload.availableReplicas ?? 0
+        let updated = workload.updatedReplicas ?? 0
+        let readinessRatio = desired > 0 ? Double(ready) / Double(desired) : 0
+        let availableRatio = desired > 0 ? Double(available) / Double(desired) : 0
+        let events = workloadEventCounts(namespace: namespace, workload: workload)
+
+        var attributes: TelemetryAttributes = [
+            "cluster_id": .string(cluster.id.uuidString),
+            "context": .string(cluster.contextName),
+            "namespace": .string(namespace.name),
+            "workload": .string(workload.name),
+            "kind": .string(workload.kind.displayName),
+            "desired": .int(desired),
+            "ready": .int(ready),
+            "available": .int(available),
+            "updated": .int(updated),
+            "status": .string(workload.status.displayName),
+            "ready_ratio": .double(readinessRatio),
+            "available_ratio": .double(availableRatio),
+            "warning_events": .int(events.warnings),
+            "error_events": .int(events.errors)
+        ]
+
+        if let suspension = workload.isSuspended {
+            attributes["suspended"] = .bool(suspension)
+        }
+
+        Task {
+            await telemetryService.record(
+                TelemetryEvent(
+                    name: "workload_rollout_snapshot",
+                    timestamp: timestamp,
+                    attributes: attributes
+                )
+            )
+        }
+    }
+
+    private func emitServiceTelemetry(clusterID: Cluster.ID, contextName: String, namespace: Namespace) {
+        guard !namespace.services.isEmpty else { return }
+        let timestamp = Date()
+        let services = namespace.services
+        let total = services.count
+        let warnings = services.filter { $0.healthState == .warning }.count
+        let failing = services.filter { $0.healthState == .failing }.count
+        let readyEndpoints = services.reduce(into: 0) { $0 += $1.readyEndpointCount }
+        let totalEndpoints = services.reduce(into: 0) { $0 += $1.totalEndpointCount }
+
+        let summaryAttributes: TelemetryAttributes = [
+            "cluster_id": .string(clusterID.uuidString),
+            "context": .string(contextName),
+            "namespace": .string(namespace.name),
+            "services_total": .int(total),
+            "services_warning": .int(warnings),
+            "services_failing": .int(failing),
+            "endpoints_ready": .int(readyEndpoints),
+            "endpoints_total": .int(totalEndpoints)
+        ]
+
+        Task {
+            await telemetryService.record(
+                TelemetryEvent(
+                    name: "service_namespace_summary",
+                    timestamp: timestamp,
+                    attributes: summaryAttributes
+                )
+            )
+
+            for service in services.prefix(50) {
+                var attributes: TelemetryAttributes = [
+                    "cluster_id": .string(clusterID.uuidString),
+                    "context": .string(contextName),
+                    "namespace": .string(namespace.name),
+                    "service": .string(service.name),
+                    "type": .string(service.type),
+                    "health_state": .string(service.healthState.rawValue),
+                    "ready_endpoints": .int(service.readyEndpointCount),
+                    "not_ready_endpoints": .int(service.notReadyEndpointCount),
+                    "total_endpoints": .int(service.totalEndpointCount)
+                ]
+
+                if let latencyP50 = service.latencyP50 {
+                    attributes["latency_p50_ms"] = .double(latencyP50 * 1_000)
+                }
+                if let latencyP95 = service.latencyP95 {
+                    attributes["latency_p95_ms"] = .double(latencyP95 * 1_000)
+                }
+                if !service.targetPods.isEmpty {
+                    attributes["target_pods"] = .string(service.targetPods.joined(separator: ","))
+                }
+
+                await telemetryService.record(
+                    TelemetryEvent(
+                        name: "service_health_snapshot",
+                        timestamp: timestamp,
+                        attributes: attributes
+                    )
+                )
+            }
+        }
+    }
+
+    private func emitPortForwardEvent(name: String, request: PortForwardRequest, status: PortForwardStatus, message: String?) {
+        var attributes: TelemetryAttributes = [
+            "cluster_id": .string(request.clusterID.uuidString),
+            "context": .string(request.contextName),
+            "namespace": .string(request.namespace),
+            "pod": .string(request.podName),
+            "local_port": .int(request.localPort),
+            "remote_port": .int(request.remotePort),
+            "status": .string(portForwardStatusString(status))
+        ]
+        if let message, !message.isEmpty {
+            attributes["message"] = .string(message)
+        }
+
+        Task {
+            await telemetryService.record(
+                TelemetryEvent(
+                    name: name,
+                    attributes: attributes
+                )
+            )
+        }
+    }
+
+    private func emitPortForwardFailure(request: PortForwardRequest, message: String) {
+        emitPortForwardEvent(name: "port_forward_failed", request: request, status: .failed(message), message: message)
+    }
+
+    private func portForwardStatusString(_ status: PortForwardStatus) -> String {
+        switch status {
+        case .establishing: return "establishing"
+        case .active: return "active"
+        case .failed: return "failed"
+        }
     }
 
     private func buildNodeHeatmap(from cluster: Cluster) -> [HeatmapEntry] {
@@ -2457,6 +2687,7 @@ final class AppModel: ObservableObject {
         cluster.lastSynced = Date()
         clusters[clusterIndex] = cluster
         persistSelection()
+        emitServiceTelemetry(clusterID: cluster.id, contextName: cluster.contextName, namespace: namespace)
     }
 
     private func applyHelmReleases(clusterID: Cluster.ID, releases: [HelmRelease]) {
@@ -2473,7 +2704,8 @@ final class AppModel: ObservableObject {
             execService: MockExecService(),
             portForwardService: MockPortForwardService(),
             editService: MockEditService(),
-            helmService: MockHelmService(releases: [])
+            helmService: MockHelmService(releases: []),
+            telemetryService: NoopTelemetryService()
         )
 #else
         let model = AppModel()
