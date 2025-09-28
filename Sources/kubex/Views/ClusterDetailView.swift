@@ -31,7 +31,8 @@ struct ClusterDetailView: View {
         case configLimitRanges
         case configHPAs
         case configPodDisruptionBudgets
-        case helm
+        case helmReleases
+        case helmRepositories
         case networkServices
         case networkEndpoints
         case networkIngresses
@@ -68,7 +69,8 @@ struct ClusterDetailView: View {
             case .configLimitRanges: return "Limit Ranges"
             case .configHPAs: return "HPAs"
             case .configPodDisruptionBudgets: return "Pod Disruption Budgets"
-            case .helm: return "Helm"
+            case .helmReleases: return "Helm Releases"
+            case .helmRepositories: return "Helm Repositories"
             case .networkServices: return "Services"
             case .networkEndpoints: return "Endpoints"
             case .networkIngresses: return "Ingresses"
@@ -105,7 +107,8 @@ struct ClusterDetailView: View {
             case .configLimitRanges: return "speedometer"
             case .configHPAs: return "gauge"
             case .configPodDisruptionBudgets: return "shield"
-            case .helm: return "shippingbox"
+            case .helmReleases: return "shippingbox"
+            case .helmRepositories: return "shippingbox.and.arrow.up"
             case .networkServices: return "switch.2"
             case .networkEndpoints: return "point.3.filled.connected.trianglepath.dotted"
             case .networkIngresses: return "cloud"
@@ -115,7 +118,7 @@ struct ClusterDetailView: View {
             case .storagePersistentVolumeClaims: return "externaldrive"
             case .storagePersistentVolumes: return "externaldrive.connected.to.line.below"
             case .storageStorageClasses: return "internaldrive"
-            case .namespaces: return "folders"
+            case .namespaces: return "square.stack.3d.up.fill"
             case .events: return "bell"
             case .accessControl: return "lock.shield"
             case .customResources: return "puzzlepiece.extension"
@@ -161,7 +164,8 @@ struct ClusterDetailView: View {
                  .configLimitRanges,
                  .configHPAs,
                  .configPodDisruptionBudgets,
-                 .helm,
+                 .helmReleases,
+                 .helmRepositories,
                  .networkServices,
                  .networkEndpoints,
                  .networkIngresses,
@@ -229,7 +233,9 @@ struct ClusterDetailView: View {
                  .configHPAs,
                  .configPodDisruptionBudgets:
                 return .config
-            case .helm: return .helm
+            case .helmReleases,
+                 .helmRepositories:
+                return .helm
             case .networkServices,
                  .networkEndpoints,
                  .networkIngresses,
@@ -255,7 +261,7 @@ struct ClusterDetailView: View {
             case .applications: return .applications
             case .nodes: return .nodes
             case .config: return .configConfigMaps
-            case .helm: return .helm
+            case .helm: return .helmReleases
             case .network: return .networkServices
             case .storage: return .storagePersistentVolumeClaims
             case .namespaces: return .namespaces
@@ -286,7 +292,8 @@ struct ClusterDetailView: View {
             case .configLimitRanges: return "config_limitranges"
             case .configHPAs: return "config_hpas"
             case .configPodDisruptionBudgets: return "config_pdbs"
-            case .helm: return "helm"
+            case .helmReleases: return "helm_releases"
+            case .helmRepositories: return "helm_repositories"
             case .networkServices: return "network_services"
             case .networkEndpoints: return "network_endpoints"
             case .networkIngresses: return "network_ingresses"
@@ -323,7 +330,8 @@ struct ClusterDetailView: View {
             case "config_limitranges": self = .configLimitRanges
             case "config_hpas": self = .configHPAs
             case "config_pdbs": self = .configPodDisruptionBudgets
-            case "helm": self = .helm
+            case "helm_releases": self = .helmReleases
+            case "helm_repositories": self = .helmRepositories
             case "network_services": self = .networkServices
             case "network_endpoints": self = .networkEndpoints
             case "network_ingresses": self = .networkIngresses
@@ -391,6 +399,23 @@ struct ClusterDetailView: View {
             }
         }
 
+        var systemImage: String? {
+            switch self {
+            case .overview: return "rectangle.and.text.magnifyingglass"
+            case .applications: return "app.connected.to.app.below.fill"
+            case .nodes: return "cpu"
+            case .workloads: return "shippingbox"
+            case .config: return "gearshape.2"
+            case .helm: return "shippingbox.circle"
+            case .network: return "point.3.connected.trianglepath.dotted"
+            case .storage: return "externaldrive.stack"
+            case .namespaces: return "square.stack.3d.up.fill"
+            case .events: return "bell"
+            case .accessControl: return "lock.shield"
+            case .customResources: return "puzzlepiece.extension"
+            }
+        }
+
         var tabs: [ClusterDetailView.Tab] {
             switch self {
             case .overview: return [.overview]
@@ -406,7 +431,11 @@ struct ClusterDetailView: View {
                     .configHPAs,
                     .configPodDisruptionBudgets
                 ]
-            case .helm: return [.helm]
+            case .helm:
+                return [
+                    .helmReleases,
+                    .helmRepositories
+                ]
             case .network:
                 return [
                     .networkServices,
@@ -1140,7 +1169,7 @@ struct ClusterDetailView: View {
 
                 Spacer()
 
-                if selectedTab == .helm {
+                if selectedTab == .helmReleases {
                     if model.helmLoadingContexts.contains(cluster.contextName) {
                         ProgressView()
                             .controlSize(.small)
@@ -1384,13 +1413,19 @@ struct ClusterDetailView: View {
                 systemImage: "shield",
                 description: Text("PDB insights are coming soon to Kubex.")
             )
-        case .helm:
+        case .helmReleases:
             HelmListView(
                 cluster: cluster,
                 isLoading: model.helmLoadingContexts.contains(cluster.contextName),
                 errorMessage: model.helmErrors[cluster.contextName],
                 selection: $selectedHelmIDs,
                 searchText: resourceSearchText
+            )
+        case .helmRepositories:
+            centeredUnavailableView(
+                "Helm Repositories",
+                systemImage: "shippingbox.and.arrow.up",
+                description: Text("Helm repository management is coming soon to Kubex.")
             )
         case .networkServices:
             NetworkListView(
@@ -3759,8 +3794,10 @@ private struct ResourceInspector: View {
 
         private var defaultPrompt: String {
             switch selectedTab {
-            case .helm:
+            case .helmReleases:
                 return "Select a Helm release to preview metadata."
+            case .helmRepositories:
+                return "Helm repositories will appear here soon."
             case .networkServices,
                  .networkEndpoints,
                  .networkIngresses,
@@ -4129,7 +4166,8 @@ private struct ResourceInspector: View {
              .configLimitRanges,
              .configHPAs,
              .configPodDisruptionBudgets,
-             .helm,
+             .helmReleases,
+             .helmRepositories,
              .networkServices,
              .networkEndpoints,
              .networkIngresses,
@@ -4208,12 +4246,14 @@ extension ClusterDetailView {
                 )
             )
 
-        case .helm:
+        case .helmReleases:
             guard let releaseID = selectedHelmIDs.first else {
                 model.clearInspectorSelection()
                 return
             }
             model.setInspectorSelection(.helm(clusterID: cluster.id, releaseID: releaseID))
+        case .helmRepositories:
+            model.clearInspectorSelection()
 
         case .networkServices, .networkEndpoints, .networkIngresses, .networkPolicies, .networkLoadBalancers, .networkPortForwards:
             guard let namespace, let focus = currentNetworkFocus else {
@@ -4641,7 +4681,7 @@ private extension ClusterDetailView {
             detailNode = cluster.nodes.first(where: { $0.id == nodeID })
 
         case let .helm(releaseID):
-            selectedTab = .helm
+            selectedTab = .helmReleases
             selectedHelmIDs = Set([releaseID])
 
         case let .service(_, serviceID):
@@ -9507,28 +9547,12 @@ private struct NavigationSidebar: View {
                                 }
                                 .padding(.top, 6)
                             } label: {
-                                Text(category.menuTitle.uppercased())
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.vertical, 6)
-                                    .padding(.horizontal, 6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(Color.accentColor.opacity(hoveredCategory == category ? 0.12 : 0))
-                                    )
-                                    .contentShape(Rectangle())
-                                    .onHover { hovering in
-                                        hoveredCategory = hovering ? category : nil
-                                    }
-                                    .onTapGesture {
-                                        toggle(category)
-                                    }
-                            }
-                            .disclosureGroupStyle(.automatic)
+                            categoryLabel(for: category)
                         }
+                        .disclosureGroupStyle(.automatic)
                     }
                 }
+            }
             }
             .padding(.vertical, 16)
             .padding(.horizontal, 12)
@@ -9586,6 +9610,32 @@ private struct NavigationSidebar: View {
             expandedCategories.remove(category)
         } else {
             expandedCategories.insert(category)
+        }
+    }
+
+    private func categoryLabel(for category: ClusterDetailView.ResourceCategory) -> some View {
+        HStack(spacing: 8) {
+            if let icon = category.systemImage {
+                Image(systemName: icon)
+                    .font(.caption)
+            }
+            Text(category.menuTitle.uppercased())
+                .font(.caption)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.accentColor.opacity(hoveredCategory == category ? 0.12 : 0))
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            hoveredCategory = hovering ? category : nil
+        }
+        .onTapGesture {
+            toggle(category)
         }
     }
 }

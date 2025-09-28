@@ -516,7 +516,7 @@ final class AppModel: ObservableObject {
             return
 
         case let .helm(releaseID):
-            selectedResourceTab = .helm
+            selectedResourceTab = .helmReleases
             setInspectorSelection(.helm(clusterID: cluster.id, releaseID: releaseID))
 
         case let .service(namespaceID, serviceID):
@@ -824,7 +824,7 @@ final class AppModel: ObservableObject {
                 subtitle: "\(release.namespace) • Helm",
                 detail: releaseDetails.joined(separator: " · "),
                 category: "Helm",
-                icon: ClusterDetailView.Tab.helm.icon,
+                    icon: ClusterDetailView.Tab.helmReleases.icon,
                 target: .helm(releaseID: release.id),
                 secondary: [release.namespace, release.status]
             )
