@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AppKut
 
 @main
 struct KubexApp: App {
