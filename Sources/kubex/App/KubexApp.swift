@@ -82,5 +82,20 @@ private extension KubexApp {
         NSBezierPath(rect: NSRect(origin: .zero, size: fallback.size)).fill()
         fallback.unlockFocus()
         return fallback
+    },
+
+        // Fallback to a simple system placeholder if the asset is missing.
+        let fallback = NSImage(size: NSSize(width: 64, height: 64))
+        fallback.lockFocus()
+        NSColor.systemGray.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: fallback.size)).fill()
+        fallback.unlockFocus()
+        return fallback
     }
 }
+
+
+
+asdqwdkoa   
+
+oldokqw
