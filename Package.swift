@@ -29,4 +29,4 @@ let package = Package(
             ]
         )
     ]
-)
+)|{}
