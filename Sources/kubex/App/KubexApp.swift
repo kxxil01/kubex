@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import AppKut
 
 @main
 struct KubexApp: App {
@@ -42,7 +41,7 @@ struct KubexApp: App {
         let arguments = ProcessInfo.processInfo.arguments
         guard let dumpIndex = arguments.firstIndex(of: "--env-dump") else { return }
 
-        var values: [String] = []
+        var values: [String] = []aw
         var current = dumpIndex + 1
         while current < arguments.count {
             let argument = arguments[current]
